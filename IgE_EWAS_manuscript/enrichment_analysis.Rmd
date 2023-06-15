@@ -1,0 +1,1072 @@
+---
+title: "Enrichment analysis"
+author: "Priyadarshini Kachroo"
+date: "11/29/2021"
+output: 
+  html_document: 
+    code_folding: hide
+    toc: yes
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=TRUE, echo=TRUE}
+
+# restart R session
+#.rs.restartR()
+rm(list=ls())
+
+system("hostname")
+print(Sys.Date())
+print(Sys.time())
+
+libs <- c("limma", "minfi", "ggpubr", "DMRcate", "gProfileR", "gplots", "QQperm", "DOSE", "enrichplot", "clusterProfiler", "org.Hs.eg.db", "R.utils", "knitr", "gprofiler2","ggpubr","gridExtra", "grid", "ggplot2", "lattice", "ggnewscale", "magrittr", "msigdbr")
+
+for (l in libs) {
+  if (require(l, character.only = T)) {
+    print(paste0(l, " loaded successfully"))
+  } else {
+    install.packages(l)
+    require(l, character.only = T)
+    print(paste0(l, " installed and loaded successfully"))
+  }
+}
+
+# Save result files with timeStamp
+timeStamp <- as.character(round(unclass(Sys.time())))
+print(timeStamp)
+
+sig_digits <- 2
+sum_sd <- function(data, varname) {
+    eval(parse(text = str_c("data[, round(summary(", varname, "), digits=2)] %>% print()")))
+    eval(parse(text = str_c("print(str_c('SD: ', data[, sd(", varname, ", na.rm = T) %>% 
+                                round(sig_digits)]))")))
+}
+
+```
+
+# 1. Data locations and loading
+
+```{r 1.1.load_dat}
+
+fhs.dir="/udd/reprk/projects/TOPMed/DNAm_data"
+res.dir = "/proj/regeps/regep00/studies/CAMP/analyses/reprk/methylation/results/IgE_paper"
+sub.plots.dir = file.path(res.dir, "plots")
+
+merge_CG <- read.table(file=file.path(res.dir,
+                  "CAMP_CRA_DMPs_fdr_logIgE_hg19_overlap_1630601015.txt"),
+                  header=T,stringsAsFactors=F,sep='\t', quote="")
+dim(merge_CG)
+load(file=file.path(res.dir, "../norm.betas.camp_rcp_hg19_clean_allchr_1620830489.RData"))
+norm.betas.rcp<-NULL;rm(norm.betas.rcp)
+dim(ann850k)
+
+merge_CG.all <- read.table(file=file.path(res.dir,
+                  "CAMP_CRA_FHS_DMPs_fdr_logIgE_hg19_overlap_1630601015.txt"),
+                  header=T,stringsAsFactors=F,sep='\t', quote="")
+dim(merge_CG.all)
+
+# don't need to load FHS results for this, just the overlapping sites between all datasets as above
+#fhs.fdr <- read.csv(file=file.path(fhs.dir, 
+#                    "IgE_offGen3_sample3471_adjSVp01_cellnoEOS_fdr5.csv"),
+#                    as.is=TRUE, sep = ",", stringsAsFactors=FALSE)
+```
+
+# 2. Data prep for enrichment analysis
+
+```{r 2.dp}
+
+# one of the issues could be that FHS is 450K and CRA/CAMP is 850K so for now I am using the 850K gene list of the platform as background. Ideally, I would have taken the overlap of genes annotated to the CpGs tested in all datasets under analysis as the background, but with different platforms, not sure about the best approach here
+
+ann850k$Gene <- sub(";.*", "", ann850k$UCSC_RefGene_Name);
+uniq.ge.plt <- unique(ann850k$Gene)
+
+uniq.ge.plt <- uniq.ge.plt[uniq.ge.plt!="NA"]
+uniq.ge.plt <- uniq.ge.plt[uniq.ge.plt!=""]
+length(uniq.ge.plt)
+head(uniq.ge.plt)
+
+write.table(uniq.ge.plt, file=file.path(res.dir, 
+            paste0("uniq_background_genes_platform_", timeStamp, ".txt")), 
+            sep="\t", quote=F, row.names=F)
+
+uniq.hyper <- merge_CG[merge_CG$Direction_camp_cra=="++",]
+uniq.hyper <- unique(uniq.hyper$Gene.x)
+uniq.hyper <- uniq.hyper[uniq.hyper!="NA"]
+uniq.hyper <- uniq.hyper[uniq.hyper!=""]
+length(uniq.hyper)
+write.table(uniq.hyper, file=file.path(res.dir, 
+              paste0("cra_camp_uniq_hypermeth_genes_", timeStamp, ".txt")),
+            sep="\t", quote=F, row.names=F)
+
+uniq.hypo <- merge_CG[merge_CG$Direction_camp_cra=="--",]
+uniq.hypo <- unique(uniq.hypo$Gene.x)
+uniq.hypo <- uniq.hypo[uniq.hypo!="NA"]
+uniq.hypo <- uniq.hypo[uniq.hypo!=""]
+length(uniq.hypo)
+write.table(uniq.hypo, file=file.path(res.dir, 
+              paste0("cra_camp_uniq_hypometh_genes_", timeStamp, ".txt")), 
+              sep="\t", quote=F, row.names=F)
+```
+
+# 3. enrichment gprofiler2 for CRA and CAMP
+
+```{r 3.enrich_gp2_int}
+
+enrich.hyper <- gprofiler2::gost(query=uniq.hyper, organism = "hsapiens", custom_bg=uniq.ge.plt, multi_query = FALSE, evcodes=TRUE, correction_method="fdr", sources = c("GO:BP","GO:CC","GO:MF","KEGG","REAC","MIRNA", "TRANSFAC", "CORUM", "HP", "HPA", "WP"))
+names(enrich.hyper)
+
+# Results containing all annotated terms for hyper-methylated CpGs
+gem <- enrich.hyper$result[,c("term_id", "term_name", "term_size", "intersection_size", "source", "p_value", "intersection")]
+colnames(gem) <- c("GO.ID", "Description", "term_size", "intersection_size", "Domain", "p.Val", "Genes")
+gem$FDR <- gem$p.Val
+gem$Phenotype = "+1"
+gem <- gem[,c("GO.ID", "Description", "term_size", "intersection_size", "Domain", "FDR", "Phenotype", "Genes")]
+gem <- gem[order(gem$FDR),]
+head(gem); dim(gem)
+write.table(gem, file=file.path(res.dir, 
+        paste0("gProfiler2_cra_camp_logIgE_DMPs_enrich_hyper_", timeStamp, ".txt")),
+            sep="\t", quote=F, row.names=F)
+
+table(gem$Domain)
+path.hyper <- gem[gem$Domain=="KEGG" | gem$Domain=="REAC" | gem$Domain=="WP",]
+dim(path.hyper)
+#highlights terms with only kegg/Reactome or Wiki pathways
+DT::datatable(path.hyper, filter = 'top')
+
+enrich.hypo <- gprofiler2::gost(query=uniq.hypo, organism = "hsapiens", custom_bg=uniq.ge.plt, multi_query = FALSE, evcodes=TRUE, correction_method="fdr", sources = c("GO:BP","GO:CC","GO:MF","KEGG","REAC","MIRNA", "TRANSFAC", "CORUM", "HP", "HPA", "WP"))
+
+# for results containing all annotated terms
+gem <- enrich.hypo$result[,c("term_id", "term_name", "term_size", "intersection_size", "source", "p_value", "intersection")]
+colnames(gem) <- c("GO.ID", "Description", "term_size", "intersection_size", "Domain", "p.Val", "Genes")
+gem$FDR <- gem$p.Val
+gem$Phenotype = "+1"
+gem <- gem[,c("GO.ID", "Description", "term_size", "intersection_size", "Domain", "FDR", "Phenotype", "Genes")]
+gem <- gem[order(gem$FDR),]
+head(gem); dim(gem)
+write.table(gem, file=file.path(res.dir, 
+          paste0("gProfiler2_cra_camp_logIgE_DMPs_enrich_hypo_", timeStamp, ".txt")),
+           sep="\t", quote=F, row.names=F)
+
+table(gem$Domain)
+path.hypo <- gem[gem$Domain=="KEGG" | gem$Domain=="REAC" | gem$Domain=="WP",]
+dim(path.hypo)
+#highlights terms with only kegg/Reactome or Wiki pathways
+DT::datatable(path.hypo, filter = 'top')
+
+# do the above steps again after restriction on effect size and genome-wide threshold of 5.8e-08
+uniq.hyper <- merge_CG[merge_CG$Direction_camp_cra=="++",]
+uniq.hypo <- merge_CG[merge_CG$Direction_camp_cra=="--",]
+
+# Idea was that highest betas sometimes are at top but looks like that
+# isn't the case here so I am not restricting by effect size for now
+hyper.hist.cra <- ggplot(uniq.hyper) + geom_histogram(aes(beta_coeff_cra), bins=50) + labs(x="Hypermeth betas distribution CRA")
+hyper.hist.camp <- ggplot(uniq.hyper) + geom_histogram(aes(logFC), bins=50) + labs(x="Hypermeth betas distribution CAMP")
+hypo.hist.cra <- ggplot(uniq.hypo) + geom_histogram(aes(beta_coeff_cra), bins=50) + labs(x="Hypometh betas distribution CRA")
+hypo.hist.camp <- ggplot(uniq.hypo) + geom_histogram(aes(logFC), bins=50) + labs(x="Hypometh betas distribution CAMP")
+p <- grid.arrange(hyper.hist.cra,hyper.hist.camp,hypo.hist.cra, hypo.hist.camp, nrow = 2, ncol = 2)
+ggsave(p, file=file.path(sub.plots.dir, 
+                      "hist_hyper_hypo_cra_camp_betas.png"), width = 9, height = 9)
+
+####################################
+# Filter by genome-wide threshold
+####################################
+merge_CG_gw <- merge_CG[merge_CG$P.Value_cra<5.8e-08 & merge_CG$P.Value<5.8e-08,]
+dim(merge_CG_gw)
+uniq.hyper <- merge_CG_gw[merge_CG_gw$Direction_camp_cra=="++",]
+uniq.hyper <- unique(uniq.hyper$Gene.x)
+uniq.hyper <- uniq.hyper[uniq.hyper!="NA"]
+uniq.hyper <- uniq.hyper[uniq.hyper!=""]
+length(uniq.hyper) # 214
+
+uniq.hypo <- merge_CG_gw[merge_CG_gw$Direction_camp_cra=="--",]
+uniq.hypo <- unique(uniq.hypo$Gene.x)
+uniq.hypo <- uniq.hypo[uniq.hypo!="NA"]
+uniq.hypo <- uniq.hypo[uniq.hypo!=""]
+length(uniq.hypo) # 1,332
+
+enrich.hyper <- gprofiler2::gost(query=uniq.hyper, organism = "hsapiens", custom_bg=uniq.ge.plt, multi_query = FALSE, evcodes=TRUE, correction_method="fdr", sources = c("GO:BP","GO:CC","GO:MF","KEGG","REAC","MIRNA", "TRANSFAC", "CORUM", "HP", "HPA", "WP"))
+names(enrich.hyper)
+
+# Results containing all annotated terms for hyper-methylated CpGs
+gem <- enrich.hyper$result[,c("term_id", "term_name", "term_size", "intersection_size", "source", "p_value", "intersection")]
+colnames(gem) <- c("GO.ID", "Description", "term_size", "intersection_size", "Domain", "p.Val", "Genes")
+gem$FDR <- gem$p.Val
+gem$Phenotype = "+1"
+gem <- gem[,c("GO.ID", "Description", "term_size", "intersection_size", "Domain", "FDR", "Phenotype", "Genes")]
+gem <- gem[order(gem$FDR),]
+head(gem); dim(gem)
+write.table(gem, file=file.path(res.dir, 
+     paste0("gProfiler2_cra_camp_logIgE_DMPs_enrich_hyper_gwthresh_", timeStamp, ".txt")),
+     sep="\t", quote=F, row.names=F)
+
+table(gem$Domain)
+path.hyper.gw <- gem[gem$Domain=="KEGG" | gem$Domain=="REAC" | gem$Domain=="WP",]
+dim(path.hyper.gw)
+#highlights terms with only kegg/Reactome or Wiki pathways
+DT::datatable(path.hyper.gw, filter = 'top')
+
+enrich.hypo <- gprofiler2::gost(query=uniq.hypo, organism = "hsapiens", custom_bg=uniq.ge.plt, multi_query = FALSE, evcodes=TRUE, correction_method="fdr", sources = c("GO:BP","GO:CC","GO:MF","KEGG","REAC","MIRNA", "TRANSFAC", "CORUM", "HP", "HPA", "WP"))
+
+# for results containing all annotated terms
+gem <- enrich.hypo$result[,c("term_id", "term_name", "term_size", "intersection_size", "source", "p_value", "intersection")]
+colnames(gem) <- c("GO.ID", "Description", "term_size", "intersection_size", "Domain", "p.Val", "Genes")
+gem$FDR <- gem$p.Val
+gem$Phenotype = "+1"
+gem <- gem[,c("GO.ID", "Description", "term_size", "intersection_size", "Domain", "FDR", "Phenotype", "Genes")]
+gem <- gem[order(gem$FDR),]
+head(gem); dim(gem)
+write.table(gem, file=file.path(res.dir, 
+      paste0("gProfiler2_cra_camp_logIgE_DMPs_enrich_hypo_gwthresh_", timeStamp, ".txt")),
+            sep="\t", quote=F, row.names=F)
+
+table(gem$Domain)
+path.hypo.gw <- gem[gem$Domain=="KEGG" | gem$Domain=="REAC" | gem$Domain=="WP",]
+dim(path.hypo.gw)
+#highlights terms with only kegg/Reactome or Wiki pathways
+DT::datatable(path.hypo.gw, filter = 'top')
+```
+
+# 4. enrichment gprofiler2 including CRA, CAMP and FHS
+
+```{r 4.enrich_gp2_int_fhs}
+
+# Now including FHS but not filtering by genome-wide threshold here as we already have a smaller percentage of overlap (n=193 CpGs)
+
+uniq.hyper <- merge_CG.all[merge_CG.all$Direction_camp_cra_fhs=="+++",]
+uniq.hyper <- unique(uniq.hyper$Gene.x)
+uniq.hyper <- uniq.hyper[uniq.hyper!="NA"]
+uniq.hyper <- uniq.hyper[uniq.hyper!=""]
+length(uniq.hyper) # 5 genes only; will end up with nothing significant so not saving them
+#[1] "CBFA2T3" "ITGA5"   "B4GALT1" "FEZ2"    "APBB1"  
+#write.table(uniq.hyper, file=file.path(res.dir, 
+#              "cra_camp_fhs_uniq_hypermeth_genes.txt"),
+#            sep="\t", quote=F, row.names=F)
+
+uniq.hypo <- merge_CG.all[merge_CG.all$Direction_camp_cra_fhs=="---",]
+uniq.hypo <- unique(uniq.hypo$Gene.x)
+uniq.hypo <- uniq.hypo[uniq.hypo!="NA"]
+uniq.hypo <- uniq.hypo[uniq.hypo!=""]
+length(uniq.hypo) # 139 genes
+write.table(uniq.hypo, file=file.path(res.dir, 
+              paste0("cra_camp_fhs_uniq_hypometh_genes_", timeStamp, ".txt")), 
+              sep="\t", quote=F, row.names=F)
+
+# gprofiler2 enrichment
+enrich.hyper.all <- gprofiler2::gost(query=uniq.hyper, organism = "hsapiens", custom_bg=uniq.ge.plt, multi_query = FALSE, evcodes=TRUE, correction_method="fdr", sources = c("GO:BP","GO:CC","GO:MF","KEGG","REAC","MIRNA", "TRANSFAC", "CORUM", "HP", "HPA", "WP"))
+names(enrich.hyper.all)
+gem <- enrich.hyper.all$result[,c("term_id", "term_name", "term_size", "intersection_size", "source", "p_value", "intersection")]
+colnames(gem) <- c("GO.ID", "Description", "term_size", "intersection_size", "Domain", "p.Val", "Genes")
+gem$FDR <- gem$p.Val
+gem$Phenotype = "+1"
+gem <- gem[,c("GO.ID", "Description", "term_size", "intersection_size", "Domain", "FDR", "Phenotype", "Genes")]
+gem <- gem[order(gem$FDR),]
+
+# does not look very meaningful because of the gene/term size and the intersection size
+head(gem); dim(gem)
+write.table(gem, file=file.path(res.dir, 
+     paste0("gProfiler2_cra_camp_fhs_logIgE_DMPs_enrich_hyper_", timeStamp, ".txt")),
+        sep="\t", quote=F, row.names=F)
+
+table(gem$Domain)
+path.hyper.all <- gem[gem$Domain=="KEGG" | gem$Domain=="REAC" | gem$Domain=="WP",]
+dim(path.hyper.all)
+#highlights terms with only kegg/Reactome or Wiki pathways
+DT::datatable(path.hyper.all, filter = 'top')
+
+enrich.hypo.all <- gprofiler2::gost(query=uniq.hypo, organism = "hsapiens", custom_bg=uniq.ge.plt, multi_query = FALSE, evcodes=TRUE, correction_method="fdr", sources = c("GO:BP","GO:CC","GO:MF","KEGG","REAC","MIRNA", "TRANSFAC", "CORUM", "HP", "HPA", "WP"))
+
+# for results containing all annotated terms
+gem <- enrich.hypo.all$result[,c("term_id", "term_name", "term_size", "intersection_size", "source", "p_value", "intersection")]
+colnames(gem) <- c("GO.ID", "Description", "term_size", "intersection_size", "Domain", "p.Val", "Genes")
+gem$FDR <- gem$p.Val
+gem$Phenotype = "+1"
+gem <- gem[,c("GO.ID", "Description", "term_size", "intersection_size", "Domain", "FDR", "Phenotype", "Genes")]
+gem <- gem[order(gem$FDR),]
+head(gem); dim(gem)
+write.table(gem, file=file.path(res.dir, 
+     paste0("gProfiler2_cra_camp_fhs_logIgE_DMPs_enrich_hypo_", timeStamp, ".txt")),
+        sep="\t", quote=F, row.names=F)
+
+table(gem$Domain)
+path.hypo.all <- gem[gem$Domain=="KEGG" | gem$Domain=="REAC" | gem$Domain=="WP",]
+dim(path.hypo.all)
+#highlights terms with only kegg/Reactome or Wiki pathways
+DT::datatable(path.hypo.all, filter = 'top')
+```
+
+# 5. clusterProfileR enrichment analysis for CRA and CAMP
+
+```{r 5.enrich_cp_int}
+
+bck.univ.plt <- mapIds(org.Hs.eg.db, uniq.ge.plt, 'ENTREZID', 'SYMBOL')
+length(unique(bck.univ.plt))
+bck.univ.plt.df <- data.frame(bck.univ.plt)
+#bck.univ.plt.df <- bck.univ.plt.df[!is.na(bck.univ.plt.df$bck.univ.plt), ]
+bck.univ.plt.df <- bck.univ.plt.df$bck.univ.plt
+univ <- as.numeric(bck.univ.plt.df)
+univ <- univ[!is.na(univ)]
+univ <- as.character(univ)
+#ids <- as.numeric(symbols.entrez)
+#names(geneList) <- ids
+
+coeff.cra <- merge_CG_gw$beta_coeff_cra
+names(coeff.cra) <- merge_CG_gw$Gene.x
+coeff.cra.df <- data.frame(coeff.cra)
+coeff.cra.df$Gene <- names(coeff.cra)
+coeff.cra.uniq <- coeff.cra.df$Gene[!is.na(coeff.cra.df$Gene)]
+coeff.cra.uniq <- coeff.cra.df[!is.na(coeff.cra.df$Gene), ]
+coeff.cra.uniq <- coeff.cra.df[coeff.cra.df$Gene!="NA",]
+coeff.cra.uniq <- coeff.cra.df[!duplicated(coeff.cra.df$Gene), ]
+
+coeff.cra.uniq.v <- coeff.cra.uniq$coeff.cra
+names(coeff.cra.uniq.v) <- coeff.cra.uniq$Gene
+geneList <- coeff.cra.uniq.v
+geneList <- sort(geneList, decreasing = TRUE)
+entrezid <- names(geneList)
+symbols.entrez <- mapIds(org.Hs.eg.db, entrezid, 'ENTREZID', 'SYMBOL')
+length(symbols.entrez)
+#ids <- as.numeric(symbols.entrez)
+length(unique(symbols.entrez))
+ids <- lapply(symbols.entrez, as.numeric)
+#ids <- as.numeric(symbols.entrez)
+names(geneList) <- ids
+gene <- names(geneList)
+
+edo.dgn <- enrichDGN(gene, pvalueCutoff = 0.05,pAdjustMethod = "BH",qvalueCutoff = 0.05)
+barplot(edo.dgn, showCategory=20)
+
+edo.dgn.ge <- setReadable(edo.dgn, 'org.Hs.eg.db', 'ENTREZID')
+cnetplot(edo.dgn.ge, categorySize="qvalue", foldChange=geneList)
+
+# without fold change
+cnetplot(edo.dgn.ge, node_label="all", categorySize="qvalue")
+
+enrichplot::dotplot(edo.dgn.ge, showCategory=30) + ggtitle("dotplot for DO")
+
+pdf(file = file.path(sub.plots.dir, "dotplot_enrichDGN_CRA_CAMP.pdf"),width = 7, height = 7)
+enrichplot::dotplot(edo.dgn.ge, showCategory=20) + ggtitle("dotplot for DO")
+dev.off()
+
+DT::datatable(edo.dgn.ge@result, filter = 'top')
+
+# no gene sets enriched here for diseases using DysGeNET
+gse.dgn <- gseDGN(geneList,
+              minGSSize     = 10,
+              maxGSSize = 500,
+              pvalueCutoff  = 0.05,
+              pAdjustMethod = "BH",
+              verbose       = TRUE)
+#dgn <- setReadable(dgn, 'org.Hs.eg.db')
+#head(dgn, 3)
+#enrichplot::dotplot(gse.dgn, showCategory=30) + ggtitle("dotplot for DO")
+
+# Enrichment map organizes enriched terms into a network with edges connecting overlapping gene sets. In this way, mutually overlapping gene sets are tend to cluster together, making it easy to identify functional module
+x <- pairwise_termsim(edo.dgn.ge)
+emapplot(x)
+
+pdf(file = file.path(sub.plots.dir, "enrichmentMap_pairwise_gseDGN_CRA_CAMP_overlap_gw_genes.pdf"),
+    width = 11, height = 9)
+emapplot(x)
+dev.off()
+
+# nothing
+enr.do <- enrichDO(gene = gene,
+              ont           = "DO",
+              pvalueCutoff  = 0.05,
+              pAdjustMethod = "BH",
+              universe      = univ,
+              minGSSize     = 10,
+              maxGSSize     = 500,
+              qvalueCutoff  = 0.05,
+              readable      = FALSE)
+dim(enr.do) # nothing
+head(enr.do)
+gene.df <- bitr(gene, fromType = "ENTREZID",
+                 toType = c("ENSEMBL", "SYMBOL"),
+                 OrgDb = org.Hs.eg.db)
+head(gene.df)
+
+# just returns functional profile of a geneset at a specific GO level not a P-value
+ggo <- groupGO(gene     = gene,
+                OrgDb    = org.Hs.eg.db,
+                ont      = "BP",
+                level    = 2,
+                readable = TRUE)
+dim(ggo)
+head(ggo)
+
+ego <- enrichGO(gene          = gene,
+                OrgDb         = org.Hs.eg.db,
+                ont           = "BP",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.05,
+                qvalueCutoff  = 0.05,
+                readable      = TRUE)
+dim(ego) # 251
+save(ego, file=file.path(res.dir,
+                  paste0("enrich_GO_CRA_CAMP_gwthreshV1_", timeStamp, ".RData")))
+
+write.table(ego@result,file=file.path(res.dir, 
+       paste0("enrichGO_CRA_CAMP_gwthreshV1_",timeStamp,".txt"))
+                ,sep="\t",row.names=F,quote=F)
+
+head(ego)
+barplot(ego, showCategory=20)
+
+# based on 1509 genes and 1390 unique genes
+pdf(file = file.path(sub.plots.dir, "barplot_GOBP_CRA_CAMP_overlap_genes_genomewide_thresh.pdf"),width = 7, height = 7)
+barplot(ego, showCategory=20)
+dev.off()
+
+# not needed as readable=TRUE in enrichGO function
+#egox <- setReadable(ego, 'org.Hs.eg.db', 'ENTREZID')
+cnetplot(ego, categorySize="qvalue", foldChange=geneList)
+p1 <- cnetplot(ego, categorySize="qvalue", foldChange=geneList)
+
+# for CAMP
+coeff.camp <- merge_CG_gw$logFC
+names(coeff.camp) <- merge_CG_gw$Gene.x
+coeff.camp.df <- data.frame(coeff.camp)
+coeff.camp.df$Gene <- names(coeff.camp)
+coeff.camp.uniq <- coeff.camp.df$Gene[!is.na(coeff.camp.df$Gene)]
+coeff.camp.uniq <- coeff.camp.df[!is.na(coeff.camp.df$Gene), ]
+coeff.camp.uniq <- coeff.camp.df[coeff.camp.df$Gene!="NA",]
+coeff.camp.uniq <- coeff.camp.df[!duplicated(coeff.camp.df$Gene), ]
+
+coeff.camp.uniq.v <- coeff.camp.uniq$coeff.camp
+names(coeff.camp.uniq.v) <- coeff.camp.uniq$Gene
+geneList <- coeff.camp.uniq.v
+geneList <- sort(geneList, decreasing = TRUE)
+entrezid <- names(geneList)
+symbols.entrez <- mapIds(org.Hs.eg.db, entrezid, 'ENTREZID', 'SYMBOL')
+length(symbols.entrez)
+#ids <- as.numeric(symbols.entrez)
+length(unique(symbols.entrez)) # 1390
+ids <- lapply(symbols.entrez, as.numeric)
+#ids <- as.numeric(symbols.entrez)
+names(geneList) <- ids
+gene <- names(geneList)
+
+ego <- enrichGO(gene          = gene,
+                OrgDb         = org.Hs.eg.db,
+                ont           = "BP",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.05,
+                qvalueCutoff  = 0.05,
+                readable      = TRUE)
+dim(ego)
+head(ego)
+barplot(ego, showCategory=20)
+#dotplot(ego)
+enrichplot::dotplot(ego, showCategory=30) + ggtitle("dotplot for GO ORA")
+#gseaplot(y, y[1,1], title=y[1,2])
+
+pdf(file = file.path(sub.plots.dir, "dotplot_enrichGO_CRA_CAMP.pdf"),width = 7, height = 7)
+enrichplot::dotplot(ego, showCategory=20) + ggtitle("dotplot for GO ORA")
+dev.off()
+
+egox <- setReadable(ego, 'org.Hs.eg.db', 'ENTREZID')
+cnetplot(ego, categorySize="qvalue", foldChange=geneList)
+p2 <- cnetplot(ego, categorySize="qvalue", foldChange=geneList)
+
+# for better visualizing chose nrow=2
+cowplot::plot_grid(p1, p2, ncol=1, nrow=2,labels=LETTERS[1:2], rel_widths=c(.8, .8))
+
+pdf(file = file.path(sub.plots.dir, "clusterProfiler_enrichGO_CRA_CAMP_coeff_overlap_univ.pdf"),width = 22, height = 9)
+# Genes and gene ontology enrichments network
+cowplot::plot_grid(p1, p2, ncol=2, labels=LETTERS[1:2], rel_widths=c(.8, .8))
+dev.off()
+
+# Can also plot it this way as both plots would anyway look same except fold change in both datasets
+# without fold change
+cnetplot(ego, node_label="all", categorySize="qvalue")
+
+# save it
+pdf(file = file.path(sub.plots.dir, "clusterProfiler_enrichGO_CRA_CAMP_overlap_without_coeff.pdf"),width = 11, height = 9)
+# Genes and gene ontology enrichments network
+cnetplot(ego, node_label="all", categorySize="qvalue")
+dev.off()
+
+# Enrichment map organizes enriched terms into a network with edges connecting overlapping gene sets. In this way, mutually overlapping gene sets are tend to cluster together, making it easy to identify functional module
+# the plot would look same for CRA and CAMP as you are just plotting pvalues and terms, not the effect estimates
+x1 <- pairwise_termsim(ego)
+emapplot(x1)
+
+pdf(file = file.path(sub.plots.dir, "enrichmentMap_pairwise_enrichGO_CRA_CAMP_overlap_gw_genes.pdf"),
+    width = 11, height = 9)
+emapplot(x1)
+dev.off()
+
+kk <- enrichKEGG(gene         = gene,
+                 organism     = 'hsa',
+                 pvalueCutoff = 0.05,
+                 pAdjustMethod = "BH",
+                 qvalueCutoff = 0.05,
+                 minGSSize = 50,
+                 maxGSSize = 500)
+dim(kk) #28
+kk.ge <- setReadable(kk, 'org.Hs.eg.db', 'ENTREZID')
+head(kk.ge)
+
+# shows all enriched KEGG terms
+kk.ge@result$Description
+save(kk.ge, file=file.path(res.dir,
+                  paste0("enrich_Kegg_CRA_CAMP_genomewide_thresh_", timeStamp, ".RData")))
+
+write.table(kk.ge@result,file=file.path(res.dir, 
+       paste0("enrichKegg_CRA_CAMP_gw_thresh_",timeStamp,".txt"))
+                ,sep="\t",row.names=F,quote=F)
+
+browseKEGG(kk, 'hsa04070')
+library("pathview")
+hsa04070 <- pathview(gene.data  = geneList,
+                     pathway.id = "hsa04070",
+                     species    = "hsa",
+                     limit      = list(gene=max(abs(geneList)), cpd=1))
+file.copy("hsa04070.pathview.png", sub.plots.dir)
+
+#eg2np <- bitr_kegg(gene, fromType='kegg', toType='ncbi-geneid', organism='hsa')
+
+geneList.na <- geneList[names(geneList)!="NA"]
+kk2 <- gseKEGG(geneList     = geneList.na,
+               organism     = 'hsa',
+               minGSSize    = 50,
+               pvalueCutoff = 0.05,
+               pAdjustMethod = "BH",
+               maxGSSize = 500,
+               by = "fgsea",
+               verbose      = TRUE)
+head(kk2)
+#preparing geneSet collections...
+#GSEA analysis...
+#no term enriched under specific pvalueCutoff...
+
+# GSEA , no enrichment
+ego.gse <- gseGO(geneList     = geneList.na,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "BP",
+              minGSSize    = 50,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              pAdjustMethod = "BH",
+              verbose      = TRUE)
+
+# H and C2,3,5,7,8
+# Gene set enrichment analysis
+msigdbr_show_species()
+m_df <- msigdbr(species = "Homo sapiens")
+head(m_df, 2) %>% as.data.frame
+
+# Pulling data from msigdbr
+# hallmark gene sets
+m_H <- msigdbr(species = "Homo sapiens", category = "H") %>% 
+    dplyr::select(gs_name, entrez_gene)
+
+# curated gene sets
+m_C2 <- msigdbr(species = "Homo sapiens", category = "C2") %>% 
+    dplyr::select(gs_name, entrez_gene)
+
+# regulatory target/motif gene sets
+m_C3 <- msigdbr(species = "Homo sapiens", category = "C3") %>% 
+    dplyr::select(gs_name, entrez_gene)
+
+# ontology gene sets
+m_C5 <- msigdbr(species = "Homo sapiens", category = "C5") %>% 
+    dplyr::select(gs_name, entrez_gene)
+
+# immunologic signature gene sets
+m_C7 <- msigdbr(species = "Homo sapiens", category = "C7") %>% 
+    dplyr::select(gs_name, entrez_gene)
+
+# cell type signature gene sets
+m_C8 <- msigdbr(species = "Homo sapiens", category = "C8") %>% 
+    dplyr::select(gs_name, entrez_gene)
+
+# enrichments
+em.H <- enricher(gene, TERM2GENE=m_H, pvalueCutoff = 0.05, pAdjustMethod = "BH", qvalueCutoff = 0.05) # not sig
+dim(em.H)
+
+em.C2 <- enricher(gene, TERM2GENE=m_C2, pvalueCutoff = 0.05, pAdjustMethod = "BH", qvalueCutoff = 0.05) # 563
+em.C2.ge <- setReadable(em.C2, 'org.Hs.eg.db', 'ENTREZID')
+dim(em.C2.ge)
+head(em.C2.ge)
+
+em.C3 <- enricher(gene, TERM2GENE=m_C3, pvalueCutoff = 0.05, pAdjustMethod = "BH", qvalueCutoff = 0.05) # 1522
+em.C3.ge <- setReadable(em.C3, 'org.Hs.eg.db', 'ENTREZID')
+dim(em.C3.ge)
+head(em.C3.ge)
+
+em.C5 <- enricher(gene, TERM2GENE=m_C5, pvalueCutoff = 0.05, pAdjustMethod = "BH", qvalueCutoff = 0.05) # 352
+em.C5.ge <- setReadable(em.C5, 'org.Hs.eg.db', 'ENTREZID')
+dim(em.C5.ge)
+head(em.C5.ge)
+
+em.C7 <- enricher(gene, TERM2GENE=m_C7, pvalueCutoff = 0.05, pAdjustMethod = "BH", qvalueCutoff = 0.05) # 1909
+em.C7.ge <- setReadable(em.C7, 'org.Hs.eg.db', 'ENTREZID')
+dim(em.C7.ge)
+head(em.C7.ge)
+
+em.C8 <- enricher(gene, TERM2GENE=m_C8, pvalueCutoff = 0.05, pAdjustMethod = "BH", qvalueCutoff = 0.05) # 77
+em.C8.ge <- setReadable(em.C8, 'org.Hs.eg.db', 'ENTREZID')
+dim(em.C8.ge)
+head(em.C8.ge)
+
+ # no gene set enrichment here using GSEA
+em.H.gsea <- GSEA(geneList.na, TERM2GENE = m_H)
+em.C2.gsea <- GSEA(geneList.na, TERM2GENE = m_C2)
+em.C3.gsea <- GSEA(geneList.na, TERM2GENE = m_C3)
+em.C5.gsea <- GSEA(geneList.na, TERM2GENE = m_C5)
+em.C7.gsea <- GSEA(geneList.na, TERM2GENE = m_C7)
+em.C8.gsea <- GSEA(geneList.na, TERM2GENE = m_C8)
+
+# Biological theme comparison
+# to calculate enriched functional categories of each gene clusters
+# Visualization of profile comparison
+mydf <- data.frame(Entrez=names(geneList), FC=geneList)
+colnames(mydf)[2] <- c("coeff")
+mydf <- mydf[abs(mydf$coeff) > 0,]
+mydf$Group <- "Hypermethylated"
+mydf$Group[mydf$coeff < 0] <- "Hypomethylated"
+table(mydf$Group)
+mydf$Group <- as.factor(mydf$Group)
+formula_res <- compareCluster(Entrez~Group, data=mydf, fun="enrichKEGG") # 10 
+formula_res.ge <- setReadable(formula_res, 'org.Hs.eg.db', 'ENTREZID')
+head(formula_res.ge)
+
+save(formula_res.ge, file=file.path(res.dir,
+                paste0("compareCluster_enrichKEGG_CRA_CAMP_", timeStamp, ".RData")))
+
+write.table(formula_res.ge,file=file.path(res.dir,
+            paste0("compareCluster_enrichKEGG_CRA_CAMP_",timeStamp,".txt"))
+            ,sep="\t",row.names=F,quote=F)
+
+enrichplot::dotplot(formula_res.ge, x=~Group, showCategory=10)
+
+pdf(file = file.path(sub.plots.dir, "dotplot_theme_cluster_hypo_enrichKEGG_CRA_CAMP.pdf"),
+    width = 7, height = 7)
+enrichplot::dotplot(formula_res.ge, x=~Group, showCategory=10)
+dev.off()
+
+# Enrichment map organizes enriched terms into a network with edges connecting overlapping gene sets. In this way, mutually overlapping gene sets are tend to cluster together, making it easy to identify functional module
+x2 <- pairwise_termsim(formula_res.ge)
+emapplot(x2)
+# if you don't want to plot effect sizes
+#p1 <- cnetplot(edox, node_label="category") 
+#p2 <- cnetplot(edox, node_label="gene") 
+#p3 <- cnetplot(edox, node_label="all") 
+#p4 <- cnetplot(edox, node_label="none") 
+
+```
+
+# 6. clusterProfileR enrichment analysis for CRA, CAMP and FHS
+
+```{r 6.enrich_cp_int_fhs}
+
+coeff.cra <- merge_CG.all$beta_coeff_cra
+names(coeff.cra) <- merge_CG.all$Gene.x
+coeff.cra.df <- data.frame(coeff.cra)
+coeff.cra.df$Gene <- names(coeff.cra)
+coeff.cra.uniq <- coeff.cra.df$Gene[!is.na(coeff.cra.df$Gene)]
+coeff.cra.uniq <- coeff.cra.df[!is.na(coeff.cra.df$Gene), ]
+coeff.cra.uniq <- coeff.cra.df[coeff.cra.df$Gene!="NA",]
+coeff.cra.uniq <- coeff.cra.df[!duplicated(coeff.cra.df$Gene), ]
+
+coeff.cra.uniq.v <- coeff.cra.uniq$coeff.cra
+names(coeff.cra.uniq.v) <- coeff.cra.uniq$Gene
+geneList <- coeff.cra.uniq.v
+geneList <- sort(geneList, decreasing = TRUE)
+entrezid <- names(geneList)
+symbols.entrez <- mapIds(org.Hs.eg.db, entrezid, 'ENTREZID', 'SYMBOL')
+length(symbols.entrez) # 145
+#ids <- as.numeric(symbols.entrez)
+length(unique(symbols.entrez)) # 126
+ids <- lapply(symbols.entrez, as.numeric)
+#ids <- as.numeric(symbols.entrez)
+names(geneList) <- ids
+gene <- names(geneList)
+
+# this looks interesting
+edo.dgn <- enrichDGN(gene, pvalueCutoff = 0.05,pAdjustMethod = "BH",qvalueCutoff = 0.05)
+barplot(edo.dgn, showCategory=20)
+
+edo.dgn.ge <- setReadable(edo.dgn, 'org.Hs.eg.db', 'ENTREZID')
+head(edo.dgn.ge)
+
+# can be saved later depending on which view we choose
+cnetplot(edo.dgn.ge, categorySize="qvalue", foldChange=geneList)
+
+# without fold change but shows enriched terms, description and annotated genes, showCategory:number of enriched terms to display
+cnetplot(edo.dgn.ge, node_label="all", categorySize="qvalue")
+enrichplot::dotplot(edo.dgn.ge, showCategory=20) + ggtitle("dotplot for DO")
+
+save(edo.dgn.ge, file=file.path(res.dir,
+                paste0("enrich_DGN_CRA_CAMP_FHS_", timeStamp, ".RData")))
+
+write.table(edo.dgn.ge@result,file=file.path(res.dir,
+            paste0("enrichDGN_CRA_CAMP_FHS_",timeStamp,".txt"))
+            ,sep="\t",row.names=F,quote=F)
+
+pdf(file = file.path(sub.plots.dir, "barplot_enrichDGN_CRA_CAMP_FHS.pdf"),width = 7, height = 7)
+barplot(edo.dgn.ge, showCategory=20)
+dev.off()
+
+pdf(file = file.path(sub.plots.dir, "dotplot_enrichDGN_CRA_CAMP_FHS.pdf"),width = 7, height = 7)
+enrichplot::dotplot(edo.dgn.ge, showCategory=20) + ggtitle("dotplot for DO")
+dev.off()
+
+# no gene sets enriched here for diseases using DysGeNET
+gse.dgn <- gseDGN(geneList,
+              minGSSize     = 10,
+              maxGSSize = 500,
+              pvalueCutoff  = 0.05,
+              pAdjustMethod = "BH",
+              verbose       = TRUE)
+#dgn <- setReadable(dgn, 'org.Hs.eg.db')
+#head(dgn, 3)
+#enrichplot::dotplot(gse.dgn, showCategory=30) + ggtitle("dotplot for DO")
+
+# Enrichment map organizes enriched terms into a network with edges connecting overlapping gene sets. In this way, mutually overlapping gene sets are tend to cluster together, making it easy to identify functional module
+x <- pairwise_termsim(edo.dgn.ge)
+emapplot(x)
+
+pdf(file = file.path(sub.plots.dir, "enrichmentMap_pairwise_gseDGN_CRA_CAMP_FHS_overlap_genes.pdf"),
+    width = 11, height = 9)
+emapplot(x)
+dev.off()
+
+# nothing
+enr.do <- enrichDO(gene = gene,
+              ont           = "DO",
+              pvalueCutoff  = 0.05,
+              pAdjustMethod = "BH",
+              universe      = univ,
+              minGSSize     = 10,
+              maxGSSize     = 500,
+              qvalueCutoff  = 0.05,
+              readable      = FALSE)
+dim(enr.do) # nothing
+head(enr.do)
+gene.df <- bitr(gene, fromType = "ENTREZID",
+                 toType = c("ENSEMBL", "SYMBOL"),
+                 OrgDb = org.Hs.eg.db)
+head(gene.df)
+
+# just returns functional profile of a geneset at a specific GO level not a P-value
+ggo <- groupGO(gene     = gene,
+                OrgDb    = org.Hs.eg.db,
+                ont      = "BP",
+                level    = 2,
+                readable = TRUE)
+dim(ggo)
+head(ggo)
+
+# nothing came up here surprisingly for BP so chose ALL: BP, CC and MF
+ego <- enrichGO(gene          = gene,
+                OrgDb         = org.Hs.eg.db,
+                ont           = "ALL",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.05,
+                qvalueCutoff  = 0.05,
+                readable      = TRUE)
+dim(ego) # 8
+save(ego, file=file.path(res.dir,
+                  paste0("enrich_GO_CRA_CAMP_FHS_all_overlap_results_", timeStamp, ".RData")))
+
+write.table(ego@result,file=file.path(res.dir, 
+       paste0("enrichGO_CRA_CAMP_FHS_all_overlap_results_",timeStamp,".txt"))
+                ,sep="\t",row.names=F,quote=F)
+
+head(ego@result, n=8)
+barplot(ego, showCategory=20)
+enrichplot::dotplot(ego, showCategory=30) + ggtitle("dotplot for ORA")
+
+# based on 1509 genes and 1390 unique genes
+pdf(file = file.path(sub.plots.dir, "barplot_GOALL_CRA_CAMP_FHS_overlap_genes.pdf"),
+    width = 7, height = 7)
+barplot(ego, showCategory=20)
+dev.off()
+
+pdf(file = file.path(sub.plots.dir, "dotplot_GOALL_CRA_CAMP_FHS_overlap_genes.pdf"),
+    width = 7, height = 7)
+enrichplot::dotplot(ego, showCategory=30) + ggtitle("dotplot for ORA")
+dev.off()
+
+# not needed as readable=TRUE in enrichGO function
+#egox <- setReadable(ego, 'org.Hs.eg.db', 'ENTREZID')
+cnetplot(ego, categorySize="qvalue", foldChange=geneList)
+p1 <- cnetplot(ego, categorySize="qvalue", foldChange=geneList)
+
+# for CAMP
+coeff.camp <- merge_CG.all$logFC
+names(coeff.camp) <- merge_CG.all$Gene.x
+coeff.camp.df <- data.frame(coeff.camp)
+coeff.camp.df$Gene <- names(coeff.camp)
+coeff.camp.uniq <- coeff.camp.df$Gene[!is.na(coeff.camp.df$Gene)]
+coeff.camp.uniq <- coeff.camp.df[!is.na(coeff.camp.df$Gene), ]
+coeff.camp.uniq <- coeff.camp.df[coeff.camp.df$Gene!="NA",]
+coeff.camp.uniq <- coeff.camp.df[!duplicated(coeff.camp.df$Gene), ]
+
+coeff.camp.uniq.v <- coeff.camp.uniq$coeff.camp
+names(coeff.camp.uniq.v) <- coeff.camp.uniq$Gene
+geneList <- coeff.camp.uniq.v
+geneList <- sort(geneList, decreasing = TRUE)
+entrezid <- names(geneList)
+symbols.entrez <- mapIds(org.Hs.eg.db, entrezid, 'ENTREZID', 'SYMBOL')
+length(symbols.entrez) # 145
+#ids <- as.numeric(symbols.entrez)
+length(unique(symbols.entrez)) # 126
+ids <- lapply(symbols.entrez, as.numeric)
+#ids <- as.numeric(symbols.entrez)
+names(geneList) <- ids
+gene <- names(geneList)
+
+ego <- enrichGO(gene          = gene,
+                OrgDb         = org.Hs.eg.db,
+                ont           = "ALL",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.05,
+                qvalueCutoff  = 0.05,
+                readable      = TRUE)
+
+# would be same outcome as for CRA as the gene list is same, just the effect estimates would change if we plot those
+dim(ego)
+head(ego@result)
+barplot(ego, showCategory=20)
+#dotplot(ego)
+enrichplot::dotplot(ego, showCategory=30) + ggtitle("dotplot for ORA")
+#gseaplot(y, y[1,1], title=y[1,2])
+
+# not needed here as readable was TRUE in the enrichGO function
+#egox <- setReadable(ego, 'org.Hs.eg.db', 'ENTREZID')
+cnetplot(ego, categorySize="qvalue", foldChange=geneList)
+p2 <- cnetplot(ego, categorySize="qvalue", foldChange=geneList)
+
+# only with CRA (a) and CAMP (b); for better visualizing chose nrow=2
+cowplot::plot_grid(p1, p2, ncol=1,nrow=2, labels=LETTERS[1:2], rel_widths=c(.8, .8))
+
+# For FHS
+coeff.fhs <- merge_CG.all$IgE.Estimate
+names(coeff.fhs) <- merge_CG.all$Gene.x
+coeff.fhs.df <- data.frame(coeff.fhs)
+coeff.fhs.df$Gene <- names(coeff.fhs)
+coeff.fhs.uniq <- coeff.fhs.df$Gene[!is.na(coeff.fhs.df$Gene)]
+coeff.fhs.uniq <- coeff.fhs.df[!is.na(coeff.fhs.df$Gene), ]
+coeff.fhs.uniq <- coeff.fhs.df[coeff.fhs.df$Gene!="NA",]
+coeff.fhs.uniq <- coeff.fhs.df[!duplicated(coeff.fhs.df$Gene), ]
+
+coeff.fhs.uniq.v <- coeff.fhs.uniq$coeff.fhs
+names(coeff.fhs.uniq.v) <- coeff.fhs.uniq$Gene
+geneList <- coeff.fhs.uniq.v
+geneList <- sort(geneList, decreasing = TRUE)
+entrezid <- names(geneList)
+symbols.entrez <- mapIds(org.Hs.eg.db, entrezid, 'ENTREZID', 'SYMBOL')
+length(symbols.entrez) # 145
+#ids <- as.numeric(symbols.entrez)
+length(unique(symbols.entrez)) # 126
+ids <- lapply(symbols.entrez, as.numeric)
+#ids <- as.numeric(symbols.entrez)
+names(geneList) <- ids
+gene <- names(geneList)
+
+ego <- enrichGO(gene          = gene,
+                OrgDb         = org.Hs.eg.db,
+                ont           = "ALL",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.05,
+                qvalueCutoff  = 0.05,
+                readable      = TRUE)
+dim(ego)
+head(ego@result)
+barplot(ego, showCategory=20)
+#dotplot(ego)
+enrichplot::dotplot(ego, showCategory=30) + ggtitle("dotplot for ORA")
+#gseaplot(y, y[1,1], title=y[1,2])
+
+#egox <- setReadable(ego, 'org.Hs.eg.db', 'ENTREZID')
+cnetplot(ego, categorySize="qvalue", foldChange=geneList)
+
+p3 <- cnetplot(ego, categorySize="qvalue", foldChange=geneList)
+
+pdf(file = file.path(sub.plots.dir, "clusterProfiler_enrichGO_CRA_CAMP_coeff_overlap_with_FHS_univ.pdf"),
+    width = 22, height = 9)
+# Genes and gene ontology enrichments network
+cowplot::plot_grid(p1, p2,ncol=2, labels=LETTERS[1:2], rel_widths=c(.8, .8))
+dev.off()
+
+# for ease in visualizing
+cowplot::plot_grid(p1, p2, p3, ncol=1, nrow=3, labels=LETTERS[1:3], rel_widths=c(.8, .8,.8))
+
+pdf(file = file.path(sub.plots.dir, "clusterProfiler_enrichGO_CRA_CAMP_FHS_coeff_overlap_univ.pdf"),
+    width = 35, height = 9)
+# Genes and gene ontology enrichments network
+cowplot::plot_grid(p1, p2, p3, ncol=3, nrow=1, labels=LETTERS[1:3], rel_widths=c(.8, .8,.8))
+dev.off()
+
+# If you don't want effect estimates
+cnetplot(ego, categorySize="qvalue", node_label="all")
+
+# save it
+pdf(file = file.path(sub.plots.dir, "clusterProfiler_enrichGO_CRA_CAMP_FHS_overlap_without_coeff.pdf"),
+    width = 11, height = 9)
+cnetplot(ego, categorySize="qvalue", node_label="all")
+dev.off()
+
+# Enrichment map organizes enriched terms into a network with edges connecting overlapping gene sets. In this way, mutually overlapping gene sets are tend to cluster together, making it easy to identify functional module
+# The plot would look same for CRA, CAMP and FHS as you are only plotting pvalues and terms
+x1 <- pairwise_termsim(ego)
+emapplot(x1)
+
+pdf(file = file.path(sub.plots.dir, "enrichmentMap_pairwise_enrichGO_CRA_CAMP_FHS_overlap_genes.pdf"),
+    width = 11, height = 9)
+emapplot(x1)
+dev.off()
+
+kk <- enrichKEGG(gene         = gene,
+                 organism     = 'hsa',
+                 pvalueCutoff = 0.05,
+                 pAdjustMethod = "BH",
+                 qvalueCutoff = 0.05,
+                 minGSSize = 50,
+                 maxGSSize = 500)
+dim(kk) # nothing
+kk.ge <- setReadable(kk, 'org.Hs.eg.db', 'ENTREZID')
+head(kk.ge)
+#save(kk.ge, file=file.path(res.dir,
+#                  paste0("enrich_Kegg_CRA_CAMP_FHS_genomewide_thresh_", timeStamp, #".RData")))
+
+#write.table(kk.ge@result,file=file.path(res.dir, 
+#       paste0("enrichKegg_CRA_CAMP_gw_thresh_",timeStamp,".txt"))
+#                ,sep="\t",row.names=F,quote=F)
+
+geneList.na <- geneList[names(geneList)!="NA"]
+kk2 <- gseKEGG(geneList     = geneList.na,
+               organism     = 'hsa',
+               minGSSize    = 50,
+               pvalueCutoff = 0.05,
+               pAdjustMethod = "BH",
+               maxGSSize = 500,
+               by = "fgsea",
+               verbose      = TRUE)
+head(kk2)
+#preparing geneSet collections...
+#GSEA analysis...
+#no term enriched under specific pvalueCutoff...
+
+# GSEA , no enrichment
+ego.gse <- gseGO(geneList     = geneList.na,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "BP",
+              minGSSize    = 50,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              pAdjustMethod = "BH",
+              verbose      = TRUE)
+dim(ego.gse)
+
+# H and C2,3,5,7,8
+# Gene set enrichment analysis.. The same pulled gene sets from msigdbr could be used as above in section 4
+
+# enrichments
+em.H <- enricher(gene, TERM2GENE=m_H, pvalueCutoff = 0.05, pAdjustMethod = "BH", qvalueCutoff = 0.05) # none, nothing was sig
+dim(em.H)
+
+em.C2 <- enricher(gene, TERM2GENE=m_C2, pvalueCutoff = 0.05, pAdjustMethod = "BH", qvalueCutoff = 0.05) # 34
+em.C2.ge <- setReadable(em.C2, 'org.Hs.eg.db', 'ENTREZID')
+dim(em.C2.ge)
+
+# top curated gene set is for KEGG asthma which was interesting
+head(em.C2.ge)
+
+# regulatory target/motif gene sets
+em.C3 <- enricher(gene, TERM2GENE=m_C3, pvalueCutoff = 0.05, pAdjustMethod = "BH", qvalueCutoff = 0.05) # 1
+em.C3.ge <- setReadable(em.C3, 'org.Hs.eg.db', 'ENTREZID')
+dim(em.C3.ge)
+head(em.C3.ge)
+
+# ontology gene sets
+em.C5 <- enricher(gene, TERM2GENE=m_C5, pvalueCutoff = 0.05, pAdjustMethod = "BH", qvalueCutoff = 0.05) # 4
+em.C5.ge <- setReadable(em.C5, 'org.Hs.eg.db', 'ENTREZID')
+dim(em.C5.ge)
+head(em.C5.ge)
+
+# immunologic signature gene sets
+em.C7 <- enricher(gene, TERM2GENE=m_C7, pvalueCutoff = 0.05, pAdjustMethod = "BH", qvalueCutoff = 0.05) # 28
+em.C7.ge <- setReadable(em.C7, 'org.Hs.eg.db', 'ENTREZID')
+dim(em.C7.ge)
+head(em.C7.ge)
+
+# cell type signature gene sets
+em.C8 <- enricher(gene, TERM2GENE=m_C8, pvalueCutoff = 0.05, pAdjustMethod = "BH", qvalueCutoff = 0.05) # 2
+em.C8.ge <- setReadable(em.C8, 'org.Hs.eg.db', 'ENTREZID')
+dim(em.C8.ge)
+head(em.C8.ge)
+
+ # no gene set enrichment using GSEA
+em.H.gsea <- GSEA(geneList.na, TERM2GENE = m_H)
+em.C2.gsea <- GSEA(geneList.na, TERM2GENE = m_C2)
+em.C3.gsea <- GSEA(geneList.na, TERM2GENE = m_C3)
+em.C5.gsea <- GSEA(geneList.na, TERM2GENE = m_C5)
+em.C7.gsea <- GSEA(geneList.na, TERM2GENE = m_C7)
+em.C8.gsea <- GSEA(geneList.na, TERM2GENE = m_C8)
+
+# Biological theme comparison
+# to calculate enriched functional categories of each gene clusters
+# Visualization of profile comparison
+mydf <- data.frame(Entrez=names(geneList), FC=geneList)
+colnames(mydf)[2] <- c("coeff")
+mydf <- mydf[abs(mydf$coeff) > 0,]
+mydf$Group <- "Hypermethylated"
+mydf$Group[mydf$coeff < 0] <- "Hypomethylated"
+table(mydf$Group)
+mydf$Group <- as.factor(mydf$Group)
+formula_res <- compareCluster(Entrez~Group, data=mydf, fun="enrichKEGG") 
+formula_res.ge <- setReadable(formula_res, 'org.Hs.eg.db', 'ENTREZID')
+head(formula_res.ge)
+
+enrichplot::dotplot(formula_res.ge, x=~Group, showCategory=10)
+x2 <- pairwise_termsim(formula_res.ge)
+#enrichplot::emapplot(x2)
+# if you don't want to plot effect sizes
+#p1 <- cnetplot(edox, node_label="category") 
+#p2 <- cnetplot(edox, node_label="gene") 
+#p3 <- cnetplot(edox, node_label="all") 
+#p4 <- cnetplot(edox, node_label="none") 
+
+save(formula_res.ge, file=file.path(res.dir,
+                paste0("compareCluster_enrichKEGG_CRA_CAMP_FHS_", timeStamp, ".RData")))
+
+write.table(formula_res.ge,file=file.path(res.dir,
+            paste0("compareCluster_enrichKEGG_CRA_CAMP_FHS_",timeStamp,".txt"))
+            ,sep="\t",row.names=F,quote=F)
+
+#Test for over-representation (enrichment), small probability of # seeing an equal or bigger overlap
+# Hypergeometric pvalue for the overlap of all 3 cohorts
+
+# 193 is the total overlap between CRA, CAMP and FHS
+# 10426 is the overlap of significant DM CpGs in CRA and CAMP because eventually this number is checked for overlap with FHS
+# 406318 is the platform overlap between 450K of FHS and EPIC for CRA and CAMP so the background that was tested for the analysis
+# 490 is the significant DM CpGs in FHS
+# we discussed removing 51 sites that did not exist on both platforms
+phyper(193-1, 10426, 406318-10426, 490-51, lower.tail = FALSE, log.p=F)
+
+#7.22766e-182
+
+# reference: https://seqqc.wordpress.com/2019/07/25/how-to-use-phyper-in-r/
+# phyper(Overlap-1, group2, Total-group2, group1,lower.tail= FALSE)
+
+# also this works:
+# fisher.test(matrix(c(Overlap, group2-Overlap, group1-Overlap, Total-group2-group1 +Overlap), 2, 2), alternative='greater')$p.value
+# fisher.test(matrix(c(193, 10426-193, 439-193, 406318-10426-439+193), 2, 2), alternative='greater')$p.value
+```
+
+# 7. Session info
+
+```{r 7.session_info}
+print(Sys.Date())
+print(Sys.time())
+sessionInfo()
+```

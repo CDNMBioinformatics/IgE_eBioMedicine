@@ -1,0 +1,465 @@
+\documentclass{article}
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks,
+  citecolor=black,
+  filecolor=black,
+  linkcolor=red,
+  urlcolor=black
+}
+%\SweaveOpts{concordance=TRUE}
+\usepackage{graphicx, color}
+%\usepackage[export]{adjustbox}
+\usepackage{floatrow}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage{booktabs}
+\usepackage{lscape}
+\usepackage{amsmath, amssymb}
+\usepackage[sort&compress]{natbib}
+\usepackage[a4paper,left=2.5cm,top=2.5cm,bottom=2.5cm,right=2.5cm]{geometry}
+\usepackage{fancyhdr}
+\usepackage{forloop}
+\pagestyle{fancyplain}
+
+\setlength{\parindent}{0cm}
+%\renewcommand{\familydefault}{\sfdefault}
+
+%\input{tex/knitr}
+
+\begin{document}
+\title{\textbf{TOPMed CAMP DNA methylation betas cleaning}}
+
+\author{reprk: PKachroo\\
+  CDNM, BWH}
+\date{\today}
+%\begin{document}
+
+\maketitle
+
+\tableofcontents
+\clearpage
+
+\section{Setup}
+
+<<setup, echo = TRUE, message = FALSE, results = "markup">>=
+
+# restart R session
+#.rs.restartR()
+rm(list=ls())
+
+options(mc.cores=5)
+system("hostname")
+print(Sys.Date())
+print(Sys.time())
+
+# To generate document: 
+# Change working directory to code directory
+# Run this code on toques using:
+# module load R/4.0.3
+#R -e 'library(knitr);knit("TOPMed_CAMP_betas_clean.Rnw")'
+# pdflatex TOPMed_CAMP_betas_clean.tex
+
+# merging with WGS, uses hg38?
+## load libraries
+libs <- c("IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
+          "IlluminaHumanMethylationEPICmanifest", "minfi")
+
+for (l in libs) {
+  if (require(l, character.only = T)) {
+    print(paste0(l, " loaded successfully"))
+  } else {
+    install.packages(l)
+    require(l, character.only = T)
+    print(paste0(l, " installed and loaded successfully"))
+  }
+}
+
+sig_digits <- 2
+sum_sd <- function(data, varname) {
+  eval(parse(text = str_c("data[, round(summary(", varname, "), digits=2)] %>% print()")))
+  eval(parse(text = str_c("print(str_c('SD: ', data[, sd(", varname, ", na.rm = T) %>% 
+                                round(sig_digits)]))")))
+}
+@
+
+  \subsection{Packages, Data locations and loading}
+  
+<<echo = TRUE, warning=FALSE, message = FALSE, results = "markup">>=
+
+qc.dir = "/proj/regeps/regep00/studies/CAMP"
+camp.dir = file.path(qc.dir,"data/epigenetic/methylation/TopMed/data/freezes/20200117")
+
+# loading rest of the libraries
+libs <- c("limma", "wateRmelon", "minfi", "gplots", "ggplot2", "knitr", "R.utils", "impute", 
+      "stats", "tidyverse", "data.table", "here", "e1071", "GGally", "ggrepel", "ENmix", 
+      "meffil", "data.table", "robustbase", "stringi", "geneplotter", "RColorBrewer", 
+      "colorRamps", "lumi","ggrepel")
+
+for (l in libs) {
+  if (require(l, character.only = T)) {
+    print(paste0(l, " loaded successfully"))
+  } else {
+    install.packages(l)
+    require(l, character.only = T)
+    print(paste0(l, " installed and loaded successfully"))
+  }
+}
+
+plots.dir = file.path(qc.dir,"analyses/reprk/methylation/plots")
+results.dir = file.path(plots.dir,"../results")
+meff.dir = file.path(qc.dir,"analyses/reprk/meffil_850K")
+
+# scripts/code directory
+setwd("/udd/reprk/projects/TOPMed/scripts")
+# modified RCP code
+source("RCP_mod.R")
+source("LociWithSnps.R")
+
+pca.betas <- function (beta, npc = 50) 
+{
+    if (!is.matrix(beta)) {
+        stop("beta is not a data matirx")
+    }
+    cat("Analysis is running, please wait...!", "\n")
+    npc <- min(ncol(beta), npc)
+    svd <- prcomp(t(beta), center = TRUE, scale = TRUE, retx = TRUE)
+    eigenvalue <- svd[["sdev"]]^2
+    prop <- (sum(eigenvalue[1:npc])/sum(eigenvalue)) * 100
+    cat("Top ", npc, " principal components can explain ", prop, 
+        "% of data \n    variation", "\n")
+    save(svd, eigenvalue, prop, file=file.path(results.dir,"pca_betas_auto_CAMP.RData"))
+}
+
+camp.pheno <- read.csv(file=file.path(qc.dir, "data/phenotype/camp_pheno_0421.csv"),
+                as.is=TRUE, sep=",", stringsAsFactors=FALSE)
+
+samplesheet.camp <- read.csv(file=file.path(camp.dir, "LEVEL1/SampleSheet.csv"), 
+                             as.is=TRUE, sep = ",", fill=T, stringsAsFactors=FALSE)
+
+# camp chanmine issues
+#https://chanmine.bwh.harvard.edu/issues/21110
+
+# Save result files with timeStamp
+timeStamp <- as.character(round(unclass(Sys.time())))
+print(timeStamp)
+
+# Resource: https://github.com/markgene/maxprobes
+cross_probes_file = paste(camp.dir, "/LEVEL2/cross_reactive_probes.txt",
+                          sep = "")
+if (!file.size(cross_probes_file) == 0){
+    cross_probes = read.table(cross_probes_file, sep = "\t",
+                              header = F, quote = "\"", fill = T)
+    colnames(cross_probes) = c("sample")
+    n_cross_probes = nrow(cross_probes)
+    n_cross_probes
+} else {
+    n_cross_probes = 0
+}
+
+n_cross_probes # 44,570
+
+@
+
+\section{Mset loading}
+  \subsection{Failed probes loading}
+
+<<echo = TRUE, message = FALSE, warning=FALSE, results = "markup">>=
+#############################
+# CAMP funnorm-normalized mset
+#############################
+load(file=file.path(results.dir, "mset.camp.funnorm_hg19_1620502108.RData"))
+
+#############################
+# Failed probes based on detP
+# see QC code for details
+#############################
+load(file=file.path(results.dir, "failedProbes_CAMP_hg19_1620502108.RData"))
+length(failedProbes)
+
+betas <- getBeta(mset.camp.funnorm)
+ann850k <- getAnnotation(mset.camp.funnorm)
+pData.camp <- pData(mset.camp.funnorm)
+
+@
+
+  \subsection{Probe level cleaning and rcp}
+
+<<echo = TRUE, message = FALSE, warning=FALSE, results = "markup">>=
+
+########################
+# Probe filtering stats
+########################
+
+##########################################
+# Failed probes identified using meffil
+# not using them though, just to stay
+# within the minfi framework for this
+##########################################
+
+fail.cgs <- read.table(file=file.path(meff.dir, "qc/camp_failed_cgs_hg19_1618342534.txt"), 
+                       sep="\t", header=T,stringsAsFactors=FALSE)
+fail.cgs <- fail.cgs$x
+length(fail.cgs)
+length(intersect(failedProbes, fail.cgs))
+
+# both sex chromosomes
+xychr = (featureNames(mset.camp.funnorm) %in% ann850k$Name[ann850k$chr %in% c("chrX","chrY")])
+table(xychr)
+auto = !(featureNames(mset.camp.funnorm) %in% ann850k$Name[ann850k$chr %in% c("chrX","chrY")])
+mset.auto = mset.camp.funnorm[auto,]
+auto.probes <- featureNames(mset.auto)
+length(auto.probes) # used later to extract betas from autosomes
+rm(mset.auto) # to clear out memory
+
+# count sex chromosomes individually
+dim(ann850k[ann850k$chr=="chrX",])
+dim(ann850k[ann850k$chr=="chrY",])
+
+#Gender check plot using median total intensities X and Y chr
+# predictedSex <- getSex(mset.camp.funnorm, cutoff = -2)$predictedSex
+xy <- getSex(mset.camp.funnorm, cutoff = -2)
+xy$sex <- pData.camp$Gender
+head(xy)
+table(xy$sex, xy$predictedSex) # should be same
+# Plots based on phenotype sex
+plot(xy$xMed, xy$yMed, type = "n", main="Pheno Sex",
+     xlab = "X chr, median total intensity (log2)",
+     ylab = "Y chr, median total intensity (log2)")
+id <- rownames(xy)
+colors=c("deeppink3","deepskyblue")
+text(xy$xMed, xy$yMed, id, col=colors[as.factor(xy$sex)], cex=0.6)
+legend("bottomleft", c("M", "F"),
+       col = c("deepskyblue", "deeppink3"), pch = 16)
+
+# there shouldn't be any sex mismatches at this stage
+pdf(file=file.path(plots.dir, "gender_check_xy_sex_CAMP.pdf"),
+    width = 5, height = 5)
+plot(xy$xMed, xy$yMed, type = "n", main="Pheno Sex",
+     xlab = "X chr, median total intensity (log2)",
+     ylab = "Y chr, median total intensity (log2)")
+id <- rownames(xy)
+colors=c("deeppink3","deepskyblue")
+text(xy$xMed, xy$yMed, id, col=colors[as.factor(xy$sex)], cex=0.6)
+legend("bottomleft", c("M", "F"),
+       col = c("deepskyblue", "deeppink3"), pch = 16)
+dev.off()
+
+################################
+# Minimum variance pruning (just checking)
+################################
+var.betas <- rowVars(betas)
+cutoff <- quantile(var.betas,0.01, na.rm=TRUE)
+print(table(var.betas > cutoff))
+
+hist(var.betas)
+abline(v=cutoff,col='red',lwd=3)
+
+#betas.use <- betas[var.betas > cutoff,]
+#dim(betas.use)
+########################################
+
+# cross reactive probes and CH/rs probes
+crossprobes <- cross_probes$sample
+ch <- grep("^ch.", rownames(ann850k), value=TRUE); length(ch)
+rs <- grep("^rs", rownames(ann850k), value=TRUE); length(rs)
+
+# probes with SNPs at the single base extension (minor allele frequency (MAF) >5%), probes containing an SNP (MAF >5%), probes with an SNP at the CpG site (MAF >5%)
+cpg.snpsUP <- LociWithSnps(mset.camp.funnorm, snps=c("SBE","CpG"), maf=0.05)
+dim(cpg.snpsUP);head(cpg.snpsUP)
+save(cpg.snpsUP, file=file.path(results.dir,
+            paste0("cpg_snpsUP_", timeStamp,".RData")))
+
+cpg.snpsUP <- rownames(cpg.snpsUP)
+length(cpg.snpsUP)
+
+# just checking stats for 2 of the SUPs
+summary(betas["cg09139287",])
+summary(betas["cg05321646",])
+
+rm(mset.camp.funnorm) # clear memory, would not need this further in the code
+
+##############################################
+# Probe filtering-cleaning/setting to missing
+##############################################
+
+dim(betas)
+betas[(rownames(betas) %in% cpg.snpsUP),] <- NA
+# gives an idea about how many probes set to missing at each step
+dim(na.omit(betas))
+# detP>0.01 threshold in more than 20% of the samples
+betas[(rownames(betas) %in% failedProbes),] <- NA
+dim(na.omit(betas))
+betas[(rownames(betas) %in% crossprobes),] <- NA
+dim(na.omit(betas))
+betas[(rownames(betas) %in% ch),] <- NA
+dim(na.omit(betas))
+betas[(rownames(betas) %in% rs),] <- NA
+dim(na.omit(betas))
+
+##############################
+# RCP on noob normalized and
+# cleaned betas
+##############################
+dim(betas)
+dim(ann850k)
+norm.betas.rcp <- rcp.mod(betas, ann850k)
+
+######################################################################
+# Normalized betas including parents and probands and all chromosomes
+######################################################################
+save(norm.betas.rcp, ann850k, file=file.path(results.dir,
+            paste0("norm.betas.camp_rcp_hg19_clean_allchr_", timeStamp,".RData")))
+
+# frequency distribution plots for funnorm betas before RCP
+# again this takes a while so not printing in report, but saving it
+beta1=betas[ann850k$Type=="I",]
+beta2=betas[ann850k$Type=="II",]
+
+jpeg(file = file.path(plots.dir, "freq_distribution_norm_betas_CAMP.jpg"),
+    width = 750, height = 1500)
+#jpeg("distributions_CAMP.jpg",height=900,width=500)
+par(mfrow=c(3,1))
+multifreqpoly(betas,main="Multifreqpoly",xlab="Beta value")
+multifreqpoly(beta1,main="Multifreqpoly: Infinium I", xlab="Beta value")
+multifreqpoly(beta2,main="Multifreqpoly: Infinium II", xlab="Beta value")
+dev.off()
+
+# frequency distribution plots for funnorm betas after RCP
+beta1=norm.betas.rcp[ann850k$Type=="I",]
+beta2=norm.betas.rcp[ann850k$Type=="II",]
+
+jpeg(file = file.path(plots.dir, "freq_distribution_norm_betas_rcp_CAMP.jpg"),
+    width = 750, height = 1500)
+par(mfrow=c(3,1))
+multifreqpoly(norm.betas.rcp,main="Multifreqpoly",xlab="Beta value")
+multifreqpoly(beta1,main="Multifreqpoly: Infinium I", xlab="Beta value")
+multifreqpoly(beta2,main="Multifreqpoly: Infinium II", xlab="Beta value")
+dev.off()
+@
+
+  \clearpage
+  \begin{figure}[h]
+  \begin{minipage}{0.50\textwidth}
+    \includegraphics[width=0.8\textwidth]{\Sexpr{plots.dir}/freq_distribution_norm_betas_CAMP}
+  \end{minipage}%
+  \begin{minipage}{0.50\textwidth}
+    \includegraphics[width=0.8\textwidth]{\Sexpr{plots.dir}/freq_distribution_norm_betas_rcp_CAMP}
+  \end{minipage}  
+  \caption{a) Normalized Distribution before rcp b) Normalized Distribution after rcp}
+  \end{figure}
+  
+  \clearpage
+  \subsection{Beta to m-value conversion}
+
+<<echo = TRUE, message = FALSE, warning=FALSE, results = "markup">>=
+
+###################
+# Beta to M values
+###################
+rm(betas) # clearing some memory
+mvals <- beta2m(norm.betas.rcp)
+save(mvals, file=file.path(results.dir,paste0("norm.mvals.camp_hg19_clean_allchr_", 
+                                              timeStamp,".RData")))
+
+head(pData.camp)
+# checking the clustering
+pdf(file = file.path(plots.dir, "MDS_sex_500pos.pdf"), width = 6, height = 6)
+mdsPlot(as.matrix(norm.betas.rcp), numPositions=500, 
+        main=sprintf("Beta MDS - Sex\n%d most variable positions", 500), 
+        pch=19,  legendNCol=5, sampGroups=pData.camp$Gender, 
+        legendPos="topleft", pal=c(brewer.pal(8, "Dark2"), 
+                                   brewer.pal(12, "Paired")))
+dev.off()
+
+# select 1000 rows at random and then plot instead of 500 most variable
+betas.rand <- norm.betas.rcp[sample(nrow(norm.betas.rcp), 1000), ]
+
+pdf(file = file.path(plots.dir, "MDS_sex_1000pos_rand.pdf"), width = 6, height = 6)
+mdsPlot(as.matrix(betas.rand), numPositions=1000, 
+        main=sprintf("Beta MDS - Sex\n%d random positions", 1000), 
+        pch=19,  legendNCol=5, sampGroups=pData.camp$Gender, 
+        legendPos="topleft", pal=c(brewer.pal(8, "Dark2"), 
+                                   brewer.pal(12, "Paired")))
+dev.off()
+
+mdsPlot(as.matrix(norm.betas.rcp), numPositions=500, 
+        main=sprintf("Beta MDS - Sex\n%d most variable positions", 500), 
+        pch=19,  legendNCol=5, sampGroups=pData.camp$Gender, 
+        legendPos="topleft", pal=c(brewer.pal(8, "Dark2"), 
+                                   brewer.pal(12, "Paired")))
+
+mdsPlot(as.matrix(betas.rand), numPositions=1000, 
+        main=sprintf("Beta MDS - Sex\n%d random positions", 1000), 
+        pch=19,  legendNCol=5, sampGroups=pData.camp$Gender, 
+        legendPos="topleft", pal=c(brewer.pal(8, "Dark2"), 
+                                   brewer.pal(12, "Paired")))
+
+@
+
+\section{PCAs on autosomes}
+
+<<echo = TRUE, message = FALSE, warning=FALSE, results = "markup">>=
+
+dim(pData.camp); dim(camp.pheno)
+pData.camp$toe_ids <- rownames(pData.camp)
+pData.pheno.camp <- merge(pData.camp, camp.pheno, by="S_SUBJECTID", sort=F)
+dim(pData.pheno.camp)
+
+norm.betas.rcp.prob <- norm.betas.rcp[,colnames(norm.betas.rcp) %in% pData.pheno.camp$toe_ids]
+dim(norm.betas.rcp.prob)
+
+#################################################################
+# Normalized betas from probands and all chromosomes
+# remove missing probes if needed before any downstream analysis
+#################################################################
+
+# number of probes remaining after removing missing/failed probes
+dim(na.omit(norm.betas.rcp.prob))
+save(norm.betas.rcp.prob, 
+     file=file.path(results.dir,paste0("norm.betas.camp_hg19_clean_allchr_probands_", 
+                                       timeStamp,".RData")))
+
+rm(norm.betas.rcp.prob) # cleaning memory
+
+# pca on autosomes
+# autosomal.sites <- meffil.get.autosomal.sites("epic")
+# length(autosomal.sites)
+# autosomal.sites <- intersect(autosomal.sites, rownames(norm.betas.rcp))
+
+norm.betas.rcp.auto <- norm.betas.rcp[rownames(norm.betas.rcp) %in% auto.probes,]
+dim(norm.betas.rcp.auto)
+norm.betas.rcp.auto <- na.omit(norm.betas.rcp.auto)
+
+norm.betas.rcp.auto.prob <- norm.betas.rcp.auto[,colnames(norm.betas.rcp.auto) 
+                                                %in% pData.pheno.camp$toe_ids]
+dim(norm.betas.rcp.auto.prob)
+
+rm(norm.betas.rcp)
+rm(norm.betas.rcp.auto)
+
+#################################################################
+# this function will automatically save pcas in results directory
+# Top  10  principal components can explain  how much data variation
+#################################################################
+pca.betas(norm.betas.rcp.auto.prob, n=10)
+
+#################################################################
+# Normalized betas from probands and autosomes (no sex chr)
+# removed missing probes removed as above for EWAS
+#################################################################
+save(norm.betas.rcp.auto.prob, file=file.path(results.dir,
+                              paste0("norm.betas.camp_hg19_clean_NOsexchr_probands_", 
+                                     timeStamp,".RData")))
+
+@
+
+\section{Session information}
+  
+<<session, echo=FALSE, results='asis', warning = FALSE>>=
+print(Sys.Date())
+print(Sys.time())
+toLatex(sessionInfo())
+@
+    
+\end{document}

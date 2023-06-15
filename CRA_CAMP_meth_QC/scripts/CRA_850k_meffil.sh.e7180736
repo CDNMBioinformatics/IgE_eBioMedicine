@@ -1,0 +1,196 @@
+Loading required package: illuminaio
+Loading required package: MASS
+Loading required package: limma
+Loading required package: sva
+Loading required package: mgcv
+Loading required package: nlme
+This is mgcv 1.8-34. For overview type 'help("mgcv-package")'.
+Loading required package: genefilter
+
+Attaching package: ‘genefilter’
+
+The following object is masked from ‘package:MASS’:
+
+    area
+
+Loading required package: BiocParallel
+Loading required package: ggplot2
+Loading required package: plyr
+Loading required package: reshape2
+Loading required package: knitr
+Loading required package: Cairo
+Loading required package: gridExtra
+Loading required package: markdown
+Loading required package: matrixStats
+
+Attaching package: ‘matrixStats’
+
+The following object is masked from ‘package:plyr’:
+
+    count
+
+The following objects are masked from ‘package:genefilter’:
+
+    rowSds, rowVars
+
+Loading required package: multcomp
+Loading required package: mvtnorm
+Loading required package: survival
+Loading required package: TH.data
+
+Attaching package: ‘TH.data’
+
+The following object is masked from ‘package:MASS’:
+
+    geyser
+
+Loading required package: lme4
+Loading required package: Matrix
+
+Attaching package: ‘lme4’
+
+The following object is masked from ‘package:nlme’:
+
+    lmList
+
+Loading required package: parallel
+Loading required package: fastICA
+Loading required package: DNAcopy
+Loading required package: quadprog
+Loading required package: statmod
+Loading required package: gdsfmt
+Loading required package: SmartSVA
+Loading required package: isva
+Loading required package: qvalue
+Loading required package: JADE
+Loading required package: RSpectra
+Loading required package: preprocessCore
+Warning messages:
+1: In FUN(X[[i]], ...) :
+  Could not infer array name for file: /proj/regeps/regep00/studies/CRA/data/epigenetic/methylation/TopMed/data/freezes/20200117/LEVEL1/SampleSheet.csv
+2: In FUN(X[[i]], ...) :
+  Could not infer slide name for file: /proj/regeps/regep00/studies/CRA/data/epigenetic/methylation/TopMed/data/freezes/20200117/LEVEL1/SampleSheet.csv
+3: In meffil.read.samplesheet(base = "/proj/regeps/regep00/studies/CRA/data/epigenetic/methylation/TopMed/data/freezes/20200117/LEVEL1",  :
+  There should be one 'Sex' column
+4: In meffil.read.samplesheet(base = "/proj/regeps/regep00/studies/CRA/data/epigenetic/methylation/TopMed/data/freezes/20200117/LEVEL1",  :
+  No Sample_Name column, and no Slide and Array columns to generate Sample_Name column. Using IDAT basenames.
+Warning messages:
+1: In readChar(con, nchars = n) : truncating string with embedded nuls
+2: In readChar(con, nchars = n) : truncating string with embedded nuls
+Warning message:
+`fun.y` is deprecated. Use `fun` instead. 
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/qc-report.rmd
+`geom_smooth()` using method = 'gam' and formula 'y ~ s(x, bs = "cs")'
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/cell-counts.rmd
+`stat_bin()` using `bins = 30`. Pick better value with `binwidth`.
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/missing.rmd
+output file: /proj/regeps/regep00/studies/CRA/analysis/reprk/meffil_850K/qc/meffil.qc.CRA.850Kreport.hg19_beforeSamp_filtering.md
+
+Warning message:
+`fun.y` is deprecated. Use `fun` instead. 
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/qc-report.rmd
+`geom_smooth()` using method = 'gam' and formula 'y ~ s(x, bs = "cs")'
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/cell-counts.rmd
+`stat_bin()` using `bins = 30`. Pick better value with `binwidth`.
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/missing.rmd
+output file: /proj/regeps/regep00/studies/CRA/analysis/reprk/meffil_850K/qc/meffil.qc.CRA.850Kreport.hg19_afterSamp_filtering_clean.md
+
+Warning messages:
+1: In readChar(con, nchars = n) : truncating string with embedded nuls
+2: In readChar(con, nchars = n) : truncating string with embedded nuls
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/normalization-report.rmd
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/plot.rmd
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/plot.rmd
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/plot.rmd
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/wide-plot.rmd
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/wide-plot.rmd
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/wide-plot.rmd
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/wide-plot.rmd
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/wide-plot.rmd
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/wide-plot.rmd
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/plot.rmd
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/plot.rmd
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/plot.rmd
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/wide-plot.rmd
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/wide-plot.rmd
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/wide-plot.rmd
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/wide-plot.rmd
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/wide-plot.rmd
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/wide-plot.rmd
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/plot.rmd
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/plot.rmd
+
+
+processing file: /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports/plot.rmd
+output file: /proj/regeps/regep00/studies/CRA/analysis/reprk/meffil_850K/qc/meffil.norm.CRA.850Kreport.hg19_afterSamp_CG_filtering_3PCs.md
+
+Warning messages:
+1: In in_dir(input_dir(), evaluate(code, envir = env, new_device = FALSE,  :
+  You changed the working directory to /proj/regeps/regep00/studies/CRA/analysis/reprk/meffil_850K/qc (probably via setwd()). It will be restored to /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports. See the Note section in ?knitr::knit
+2: In in_dir(input_dir(), evaluate(code, envir = env, new_device = FALSE,  :
+  You changed the working directory to /proj/regeps/regep00/studies/CRA/analysis/reprk/meffil_850K/qc (probably via setwd()). It will be restored to /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports. See the Note section in ?knitr::knit
+3: In in_dir(input_dir(), evaluate(code, envir = env, new_device = FALSE,  :
+  You changed the working directory to /proj/regeps/regep00/studies/CRA/analysis/reprk/meffil_850K/qc (probably via setwd()). It will be restored to /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports. See the Note section in ?knitr::knit
+4: In in_dir(input_dir(), evaluate(code, envir = env, new_device = FALSE,  :
+  You changed the working directory to /proj/regeps/regep00/studies/CRA/analysis/reprk/meffil_850K/qc (probably via setwd()). It will be restored to /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports. See the Note section in ?knitr::knit
+5: In in_dir(input_dir(), evaluate(code, envir = env, new_device = FALSE,  :
+  You changed the working directory to /proj/regeps/regep00/studies/CRA/analysis/reprk/meffil_850K/qc (probably via setwd()). It will be restored to /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports. See the Note section in ?knitr::knit
+6: In in_dir(input_dir(), evaluate(code, envir = env, new_device = FALSE,  :
+  You changed the working directory to /proj/regeps/regep00/studies/CRA/analysis/reprk/meffil_850K/qc (probably via setwd()). It will be restored to /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports. See the Note section in ?knitr::knit
+7: In in_dir(input_dir(), evaluate(code, envir = env, new_device = FALSE,  :
+  You changed the working directory to /proj/regeps/regep00/studies/CRA/analysis/reprk/meffil_850K/qc (probably via setwd()). It will be restored to /app/R-4.0.3@i86-rhel7.0/lib64/R/library/meffil/reports. See the Note section in ?knitr::knit
+R scripting front-end version 4.0.3 (2020-10-10)

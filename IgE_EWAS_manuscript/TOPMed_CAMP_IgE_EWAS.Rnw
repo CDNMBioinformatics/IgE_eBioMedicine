@@ -1,0 +1,1050 @@
+\documentclass{article}
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks,
+  citecolor=black,
+  filecolor=black,
+  linkcolor=red,
+  urlcolor=black
+}
+%\SweaveOpts{concordance=TRUE}
+\usepackage{graphicx, color}
+%\usepackage[export]{adjustbox}
+\usepackage{floatrow}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage{booktabs}
+\usepackage{lscape}
+\usepackage{amsmath, amssymb}
+\usepackage[sort&compress]{natbib}
+\usepackage[a4paper,left=2.5cm,top=2.5cm,bottom=2.5cm,right=2.5cm]{geometry}
+\usepackage{fancyhdr}
+\usepackage{forloop}
+\pagestyle{fancyplain}
+
+\setlength{\parindent}{0cm}
+%\renewcommand{\familydefault}{\sfdefault}
+
+%\input{tex/knitr}
+
+\begin{document}
+\title{\textbf{CAMP IgE EWAS}}
+
+\author{reprk: PKachroo\\
+  CDNM, BWH}
+\date{\today}
+%\begin{document}
+
+\maketitle
+
+\tableofcontents
+\clearpage
+
+\section{Setup}
+
+<<setup, echo = TRUE, message = FALSE, results = "markup">>=
+
+# restart R session
+#.rs.restartR()
+rm(list=ls())
+
+options(mc.cores=5)
+system("hostname")
+print(Sys.Date())
+print(Sys.time())
+
+# Save result files with timeStamp
+timeStamp <- as.character(round(unclass(Sys.time())))
+print(timeStamp)
+
+# To generate document: 
+# Change working directory to code directory
+# Run this code on toques using:
+# module load R/4.0.3
+#R -e 'library(knitr);knit("TOPMed_CAMP_IgE_EWAS.Rnw")'
+# pdflatex TOPMed_CAMP_IgE_EWAS.tex
+
+## load libraries
+libs <- c("IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
+          "IlluminaHumanMethylationEPICmanifest", "minfi")
+
+for (l in libs) {
+  if (require(l, character.only = T)) {
+    print(paste0(l, " loaded successfully"))
+  } else {
+    install.packages(l)
+    require(l, character.only = T)
+    print(paste0(l, " installed and loaded successfully"))
+  }
+}
+
+sig_digits <- 2
+sum_sd <- function(data, varname) {
+    eval(parse(text = str_c("data[, round(summary(", varname, "), digits=2)] %>% print()")))
+    eval(parse(text = str_c("print(str_c('SD: ', data[, sd(", varname, ", na.rm = T) %>% 
+                                round(sig_digits)]))")))
+}
+
+# loading rest of the libraries
+libs <- c("limma", "wateRmelon", "minfi", "gplots", "ggplot2", "knitr", "R.utils", "impute", 
+          "stats", "tidyverse", "data.table", "here", "e1071", "GGally", "ggrepel", "ENmix",
+          "meffil", "data.table", "robustbase", "stringi", "geneplotter", "RColorBrewer",
+          "colorRamps", "lumi", "ggrepel", "IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
+          "IlluminaHumanMethylationEPICmanifest", "DMRcate", "meffil", "ggpubr","gdata", 
+    "gmodels", "tidyr", "dplyr","gridExtra","isva","sva","base", "DMRcate","readxl", 
+    "SmartSVA","corrplot","RColorBrewer", "bacon")
+
+for (l in libs) {
+  if (require(l, character.only = T)) {
+    print(paste0(l, " loaded successfully"))
+  } else {
+    install.packages(l)
+    require(l, character.only = T)
+    print(paste0(l, " installed and loaded successfully"))
+  }
+}
+
+source("/udd/reprk/projects/PPG_methylation/450K_DATA/analysis_knitr/scripts/qqman.r")
+
+# Functions for Smart-SVA analysis
+# Adapted from Smart-sva tutorial page/github
+# # https://rdrr.io/cran/SmartSVA/src/R/SmartSVA.R
+edge.lfdr <- function (p, trunc = TRUE, monotone = TRUE,
+                       transf = c("probit","logit"), adj = 1.5, eps = 10^-8,
+                       lambda = 0.8, ...)
+{
+  pi0 <- mean(p >= lambda)/(1 - lambda)
+  pi0 <- min(pi0, 1)
+  n = length(p)
+  transf = match.arg(transf)
+  if (transf == "probit") {
+    p = pmax(p, eps)
+    p = pmin(p, 1 - eps)
+    x = qnorm(p)
+    myd = density(x, adjust = adj)
+    mys = smooth.spline(x = myd$x, y = myd$y)
+    y = predict(mys, x)$y
+    lfdr = pi0 * dnorm(x)/y
+  }
+  if (transf == "logit") {
+    x = log((p + eps)/(1 - p + eps))
+    myd = density(x, adjust = adj)
+    mys = smooth.spline(x = myd$x, y = myd$y)
+    y = predict(mys, x)$y
+    dx = exp(x)/(1 + exp(x))^2
+    lfdr = pi0 * dx/y
+  }
+  if (trunc) {
+    lfdr[lfdr > 1] = 1
+  }
+
+  # Get 'mono' function from 'SVA' package.
+  mono <- getFromNamespace("mono", ns="sva")
+
+  if (monotone) {
+    lfdr = lfdr[order(p)]
+    lfdr = mono(lfdr)
+    lfdr = lfdr[rank(p)]
+  }
+  return(lfdr)
+}
+
+f.pval <- function (dat, orth11, orth01, y.norm, rss00, df00)  {
+
+  n <- dim(dat)[2]
+
+  df11 <- dim(orth11)[2]
+  df01 <- dim(orth01)[2]
+
+  prj11 <- dat %*% orth11
+  prj01 <- dat %*% orth01
+
+  rss11 <- y.norm - rowSums(prj11 * prj11)
+  rss01 <- y.norm - rowSums(prj01 * prj01)
+
+  fstats <- ((rss01 - rss11)/(df11 - df01))/(rss11/(n - df11))
+  p1 <- 1 - pf(fstats, df1 = (df11 - df01), df2 = (n - df11))
+
+  fstats <- ((rss00 - rss01)/(df01 - df00))/(rss01/(n - df01))
+  p2 <- 1 - pf(fstats, df1 = (df01 - df00), df2 = (n - df01))
+
+  return(list(p1=p1, p2=p2))
+}
+
+smartsva <-  function(dat, mod, mod0 = NULL, n.sv, B = 100,
+		alpha=0.25, epsilon=1e-3, VERBOSE = F) {
+	if (is.null(mod0)) {
+		mod0 <- mod[, 1]
+	}
+	
+	qr.obj <- qr(mod)
+	orth1 <- qr.Q(qr.obj)
+	uu <- eigen(crossprod(dat - tcrossprod(dat %*% orth1, orth1)),
+			 symmetric=TRUE)$vectors[, 1:n.sv, drop=F]
+	
+	# Precompute the quantites
+	y.norm <- rowSums(dat * dat)
+	mod00 <- cbind(mod0)
+	orth00 <- qr.Q(qr(mod00))
+	prj00 <- dat %*% orth00
+	rss00 <- y.norm - rowSums(prj00 * prj00)
+	df00 <- dim(orth00)[2]
+	
+	if (VERBOSE)
+		cat(paste("Iteration (out of", B, "):\n"))
+	
+	i = 0
+	rho = 0
+	
+	while (i < B && rho < 1 - epsilon) {
+		i <- i + 1
+		mod11 <- cbind(mod, uu)
+		mod01 <- cbind(mod0, uu)
+		
+		orth11 <- qr.Q(qr(mod11))
+		orth01<- qr.Q(qr(mod01))
+		
+		ptmp <- f.pval(dat, orth11, orth01, y.norm, rss00, df00)
+		
+		if (i == 1) {
+			pprob.b <- (1 - edge.lfdr(ptmp[['p1']])^alpha)
+		} else {
+			pprob.b <- (1 - edge.lfdr(ptmp[['p1']]))
+		}
+		
+		pprob.gam <- (1 - edge.lfdr(ptmp[['p2']]))
+		pprob <- pprob.gam * (1 - pprob.b)
+		
+		uu <- eigen(crossprod(dat * pprob - rowMeans(dat * pprob)),
+				symmetric=TRUE)$vectors[, 1:n.sv, drop=F]
+		# Update spearman Rho.
+		if (i > 1) {
+			rho <- cor(x=pprob, y=p.prev, use="pairwise.complete.obs",
+					method="spearman")
+			p.prev <- pprob
+		}else{
+			p.prev <- pprob
+		}
+		if (VERBOSE)
+			cat(paste(i, " ", rho, "\n"))
+	}
+	
+	sv <- uu[, 1:n.sv, drop=F]
+	retval <- list(sv = sv, n.sv = n.sv, pprob.gam = pprob.gam, 
+	               pprob.b = pprob.b, rho = rho, iter = i)
+	return(retval)
+}
+
+`EstDimRMT` <-
+function(data.m,plot=TRUE){
+ ### standardise matrix
+ M <- apply(data.m,2,function(X){ (X - mean(X))/sqrt(var(X))});
+ 
+ sigma2 <- var(as.vector(M));
+ Q <- nrow(data.m)/ncol(data.m);
+ ns <- ncol(data.m);
+ lambdaMAX <- sigma2*(1+1/Q + 2*sqrt(1/Q));
+ lambdaMIN <- sigma2*(1+1/Q - 2*sqrt(1/Q));
+ delta <- lambdaMAX - lambdaMIN;#  print(delta);
+
+ roundN <- 3;
+ step <- round(delta/ns,roundN);
+ while(step==0){
+    roundN <- roundN+1;
+    step <- round(delta/ns,roundN);
+ }
+  
+
+ lambda.v <- seq(lambdaMIN,lambdaMAX,by=step);
+ dens.v <- vector();
+ ii <- 1;
+ for(i in lambda.v){
+   dens.v[ii] <- (Q/(2*pi*sigma2))*sqrt( (lambdaMAX-i)*(i-lambdaMIN) )/i;
+   ii <- ii+1;
+ }
+ ## theoretical density
+ thdens.o <- list(min=lambdaMIN,max=lambdaMAX,step=step,
+                  lambda=lambda.v,dens=dens.v);
+ C <- 1/nrow(M) * t(M) %*% M;
+ eigen.o <- eigen(C,symmetric=TRUE);
+ ## empirical density
+ estdens.o <- density(eigen.o$values,from=min(eigen.o$values),
+                      to=max(eigen.o$values),cut=0);
+ intdim <- length(which(eigen.o$values > thdens.o$max));
+ evalues.v <- eigen.o$values;
+ ## plot
+ if(plot){
+  minx <- min(min(thdens.o$lambda),min(evalues.v));
+  maxx <- max(max(thdens.o$lambda),max(evalues.v));
+  miny <- min(min(thdens.o$dens),min(estdens.o$y));
+  maxy <- max(max(thdens.o$dens),max(estdens.o$y));
+  pdf("RMTplot.pdf",width=4,height=4);
+  plot(thdens.o$lambda,thdens.o$dens,xlim=c(0.5,maxx),ylim=c(miny,maxy),
+       type="b",col="green",xlab="Folded Eigenvalues",ylab="density",lwd=1.25);
+  i <- min(which(estdens.o$x > min(evalues.v)));
+  f <- max(which(estdens.o$x < max(evalues.v)));
+  points(x=estdens.o$x[i:f],y=estdens.o$y[i:f],type="b",col="red",cex=0.5);
+  for(i in 1:intdim){
+   abline(v=evalues.v[i],col="red",lwd=2);
+  }
+  dev.off();
+ }
+ 
+ return(list(cor=C,dim=intdim,estdens=estdens.o,thdens=thdens.o,evals=eigen.o$values));
+}
+
+# smartsva.cpp
+smartsva.cpp <-  function(dat, mod, mod0 = NULL, n.sv, B = 100,
+                          alpha=0.25, epsilon=1e-3, VERBOSE = F) {
+  if (is.null(mod0)) {
+    mod0 <- mod[, 1]
+  }
+  
+  qr.obj <- qr(mod)
+  orth1 <- qr.Q(qr.obj)
+  uu <- eigs_sym(crossprodCpp(dat - tcrossprodCpp(prodCpp(dat, orth1), orth1)),
+                 k=n.sv)$vectors[, 1:n.sv, drop=F]
+  
+  # Precompute the quantites
+  y.norm <- rowSums(dat * dat)
+  mod00 <- cbind(mod0)
+  orth00 <- qr.Q(qr(mod00))
+  prj00 <- prodCpp(dat, orth00)
+  rss00 <- y.norm - rowSums(prj00 * prj00)
+  df00 <- dim(orth00)[2]
+  
+  if (VERBOSE)
+    cat(paste("Iteration (out of", B, "):\n"))
+  
+  i = 0
+  rho = 0
+  
+  while (i < B && rho < 1 - epsilon) {
+    i <- i + 1
+    mod11 <- cbind(mod, uu)
+    mod01 <- cbind(mod0, uu)
+    
+    orth11 <- qr.Q(qr(mod11))
+    orth01<- qr.Q(qr(mod01))
+    
+    ptmp <- f.pval.cpp(dat, orth11, orth01, y.norm, rss00, df00)
+    
+    if (i == 1) {
+      pprob.b <- (1 - edge.lfdr(ptmp[['p1']])^alpha)
+    } else {
+      pprob.b <- (1 - edge.lfdr(ptmp[['p1']]))
+    }
+    
+    pprob.gam <- (1 - edge.lfdr(ptmp[['p2']]))
+    pprob <- pprob.gam * (1 - pprob.b)
+    
+    uu <- eigs_sym(crossprodCpp(dat * pprob - rowMeans(dat * pprob)),
+                   k=n.sv)$vectors[, 1:n.sv, drop=F]
+    # Update spearman Rho.
+    if (i > 1) {
+      rho <- cor(x=pprob, y=p.prev, use="pairwise.complete.obs",
+                 method="spearman")
+      p.prev <- pprob
+    }else{
+      p.prev <- pprob
+    }
+    if (VERBOSE)
+      cat(paste(i, " ", rho, "\n"))
+  }
+  
+  sv <- uu[, 1:n.sv, drop=FALSE]
+  retval <- list(sv = sv, n.sv = n.sv, pprob.gam = pprob.gam, 
+                 pprob.b = pprob.b, rho = rho, iter = i)
+  return(retval)
+}
+
+# for correlations
+cor.mtest <- function(mat, ...) {
+    mat <- as.matrix(mat)
+    n <- ncol(mat)
+    p.mat<- matrix(NA, n, n)
+    diag(p.mat) <- 0
+    for (i in 1:(n - 1)) {
+        for (j in (i + 1):n) {
+            tmp <- cor.test(mat[, i], mat[, j], ...)
+            p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+        }
+    }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+@
+
+  \subsection{Packages, Data locations and loading}
+  
+<<echo = TRUE, warning=FALSE, message = FALSE, results = "markup">>=
+
+camp.dir="/proj/regeps/regep00/studies/CAMP"
+results.dir = file.path(camp.dir, "analyses/reprk/methylation/results/IgE_paper")
+plots.dir = file.path(results.dir, "plots")
+load(file=file.path(results.dir, 
+                  "../norm.betas.camp_hg19_clean_NOsexchr_probands_1620830489.RData"))
+load(file=file.path(results.dir, "../mset.camp.funnorm_hg19_1620502108.RData"))
+pData.camp <- pData(mset.camp.funnorm)
+pData.camp$toe_ids <- rownames(pData.camp)
+ann850k <- getAnnotation(mset.camp.funnorm)
+
+load(file=file.path(results.dir, "../pca_betas_auto_CAMP.RData"))
+pcs <- svd$x
+pcs=pcs[,1:10]
+
+load(file=file.path(results.dir, 
+                  "../camp_EPIC_estimatecellcounts2_result_hg19_1620502108.RData"))
+
+camp.pheno <- read.csv(file=file.path(camp.dir, 
+                      "data/phenotype/camp_pheno_0421.csv"),
+                as.is=TRUE, sep=",", stringsAsFactors=FALSE)
+
+samplesheet.camp <- read.csv(file=file.path(camp.dir, 
+     "data/epigenetic/methylation/TopMed/data/freezes/20200117/LEVEL1/SampleSheet.csv"), 
+                       as.is=TRUE, sep = ",", fill=T, stringsAsFactors=FALSE)
+
+metadata <- read_excel(
+"/proj/regeps/regep00/studies/CAMP/analyses/reprk/CAMPmetadata_methylation_internal_vc.xlsx")
+
+rm(mset.camp.funnorm) # clear memory as we don't need this object anymore
+@
+
+\section{Data wrangling and prep for SVA}
+
+<<echo = TRUE, message = FALSE, warning=FALSE, results = "markup">>=
+
+samplesheet.camp$Slide <- as.factor(samplesheet.camp$SentrixID)
+samplesheet.camp$Sample_Plate <- as.factor(samplesheet.camp$BATCH)
+samplesheet.camp$Array <- as.factor(samplesheet.camp$SentrixPosition)
+samplesheet.camp$SentrixID <- NULL; samplesheet.camp$BATCH <- NULL; 
+samplesheet.camp$SentrixPosition <- NULL
+
+# merge all information necessary for models to phenotype file for camp
+samplesheet.camp=samplesheet.camp[,c("ALIAS","Slide","Sample_Plate","Array"), 
+                                  drop=FALSE]
+#setnames(pData.camp, "LEVEL1.TOEID", "TOEID")
+pData.camp <- merge(pData.camp, samplesheet.camp, by.x="TOEID", by.y="ALIAS", 
+                    sort=F)
+pData.camp <- merge(pData.camp, celltype.est.2, by.x="toe_ids", by.y="row.names", 
+                    sort=F)
+pData.camp <- merge(pData.camp, pcs, by.x="toe_ids", by.y="row.names", sort=F)
+
+# Get subjects around F48 using metadata file read in earlier
+length(unique(metadata$s_subjectid))
+camp.pheno.meta <- merge(camp.pheno, metadata, by.x="S_SUBJECTID", 
+                         by.y="s_subjectid", sort=F)
+dim(camp.pheno.meta)
+length(unique(camp.pheno.meta$S_SUBJECTID))
+table(camp.pheno.meta$visit_code)
+# c60 f44 f48 f52 f56 f60  t2  v2 v3m v3s  v4  y2  y3 
+#   1  16 760  16  13   1   7   1   6   2   2   6   2 
+camp.pheno.meth <- camp.pheno.meta[camp.pheno.meta$visit_code=="f44" | 
+                  camp.pheno.meta$visit_code=="f48" | camp.pheno.meta$visit_code=="f52",]
+
+pData.pheno.meth.camp <- merge(pData.camp, camp.pheno.meth, by="S_SUBJECTID", sort=F) 
+# 725 samples with camp.pheno, 703 with camp.pheno.meth at F44, F48, F52
+dim(pData.pheno.meth.camp)
+
+pData.pheno.meth.camp$Sample_Plate <- as.factor(pData.pheno.meth.camp$Sample_Plate)
+pData.pheno.meth.camp$Slide <- as.factor(pData.pheno.meth.camp$Slide)
+pData.pheno.meth.camp$Array <- as.factor(pData.pheno.meth.camp$Array)
+
+# Check how probands cluster based on PCs
+# final sample set clustering
+ggplot(pData.pheno.meth.camp, aes(x = PC1, y = PC2)) + 
+  geom_point(aes(color = as.factor(Gender)), alpha = 0.5, size = 2) + 
+  labs(title = "PC1 vs PC2 - camp probands only") + 
+  geom_label_repel(aes(label = TOEID),
+                   box.padding   = 0.25, 
+                   point.padding = 0.5,
+                   segment.color = 'grey50') + 
+  theme_minimal() + 
+  theme(plot.title = element_text(size = 10, face = "bold"), 
+        axis.text = element_text(size = 10), 
+        axis.title = element_text(size = 10))
+ggsave(path=plots.dir, "pc1_pc2_probands_gender_CAMP.png", width = 8, height = 6)
+
+ggplot(pData.pheno.meth.camp, aes(x = PC1, y = PC2)) + 
+  geom_point(aes(color = as.factor(MOMASM)), alpha = 0.5, size = 2) + 
+  labs(title = "PC1 vs PC2 - CAMP probands only") + 
+  geom_label_repel(aes(label = TOEID),
+                   box.padding   = 0.25, 
+                   point.padding = 0.5,
+                   segment.color = 'grey50') + 
+  theme_minimal() + 
+  theme(plot.title = element_text(size = 10, face = "bold"), 
+        axis.text = element_text(size = 10), 
+        axis.title = element_text(size = 10))
+ggsave(path=plots.dir, "pc1_pc2_probands_masthma_CAMP.png", width = 8, height = 6)
+
+# Because sample plate has too many levels so done slightly differently
+p1 <- ggplot(pData.pheno.meth.camp, aes(x = PC1, y = PC2)) + 
+  scale_color_viridis_d() +
+    labs(color = "Sample_Plate", shape = "Sample_Plate", 
+         title = "PC1 vs PC2 - CAMP probands only") + 
+    geom_label_repel(aes(label = TOEID),
+                     box.padding   = 0.25, 
+                     point.padding = 0.5,
+                     segment.color = 'grey50') + 
+    theme_minimal() + 
+    theme(plot.title = element_text(size = 10, face = "bold"), 
+          axis.text = element_text(size = 10), 
+          axis.title = element_text(size = 10))
+
+jit <- position_jitter(seed = 123)
+p1 + geom_jitter(aes(shape = Sample_Plate, 
+        color = as.factor(Sample_Plate)), size = 2, position = jit) +
+    scale_shape_manual(values = rep(13:18, len = 17))
+ggsave(path=plots.dir, "pc1_pc2_probands_batch_CAMP.png", width = 8, height = 6)
+
+p1 <- ggplot(pData.pheno.meth.camp, aes(x = PC1, y = PC2)) + 
+  scale_color_viridis_d() +
+    labs(color = "Array", shape = "Array", 
+         title = "PC1 vs PC2 - CAMP probands only") + 
+    geom_label_repel(aes(label = TOEID),
+                     box.padding   = 0.25, 
+                     point.padding = 0.5,
+                     segment.color = 'grey50') + 
+    theme_minimal() + 
+    theme(plot.title = element_text(size = 10, face = "bold"), 
+          axis.text = element_text(size = 10), 
+          axis.title = element_text(size = 10))
+
+jit <- position_jitter(seed = 123)
+p1 + geom_jitter(aes(shape = Array, 
+        color = as.factor(Array)), size = 2, position = jit) +
+    scale_shape_manual(values = rep(15:17, len = 8))
+ggsave(path=plots.dir, "pc1_pc2_probands_array_CAMP.png", width = 8, height = 6)
+
+#pData.pheno.meth.camp$age_f48 <- as.numeric(pData.pheno.meth.camp$age_f48)
+pData.pheno.meth.camp$age_f48 <- as.numeric(pData.pheno.meth.camp$age_f48.x)
+pData.pheno.meth.camp$Gender <- as.factor(pData.pheno.meth.camp$Gender)
+pData.pheno.meth.camp$BMI_F48 <- as.numeric(pData.pheno.meth.camp$BMI_F48)
+pData.pheno.meth.camp$HTCM_F48 <- as.numeric(pData.pheno.meth.camp$HTCM_F48)
+pData.pheno.meth.camp$MOMASM <- as.factor(pData.pheno.meth.camp$MOMASM)
+pData.pheno.meth.camp$ETS <- as.factor(pData.pheno.meth.camp$ETS)
+pData.pheno.meth.camp$growth_pattern <- as.factor(pData.pheno.meth.camp$growth_pattern)
+pData.pheno.meth.camp$TG <- pData.pheno.meth.camp$TG
+pData.pheno.meth.camp$LOG10IGE_iuml_F48 <- as.numeric(pData.pheno.meth.camp$LOG10IGE_iuml_F48)
+# # RACE, 1=white, 2= black, 3 = hispanic; 4= other
+pData.pheno.meth.camp$RACE <- as.factor(pData.pheno.meth.camp$RACE)
+
+which(is.na(pData.pheno.meth.camp$LOG10IGE_iuml_F48)) # 29 samples
+pData.pheno.meth.camp[is.na(pData.pheno.meth.camp$LOG10IGE_iuml_F48),]$toe_ids
+pData.pheno.meth.camp[is.na(pData.pheno.meth.camp$LOG10IGE_iuml_F48),]$S_SUBJECTID
+
+which(is.na(pData.pheno.meth.camp$BMI_F48)) # 18 samples
+pData.pheno.meth.camp[is.na(pData.pheno.meth.camp$BMI_F48),]$toe_ids
+
+which(is.na(pData.pheno.meth.camp$MOMASM)) # 16 samples
+pData.pheno.meth.camp[is.na(pData.pheno.meth.camp$MOMASM),]$toe_ids
+
+which(is.na(pData.pheno.meth.camp$ETS)) # 3 samples
+pData.pheno.meth.camp[is.na(pData.pheno.meth.camp$ETS),]$toe_ids
+
+pData.pheno.meth.camp <- pData.pheno.meth.camp[!is.na(pData.pheno.meth.camp$LOG10IGE_iuml_F48),]
+
+# standardizing to make it consistent with CRA as discussed with Dr. Dawn L. DeMeo
+summary(pData.pheno.meth.camp$LOG10IGE_iuml_F48)
+# 2 subjects
+length(pData.pheno.meth.camp$LOG10IGE_iuml_F48[pData.pheno.meth.camp$LOG10IGE_iuml_F48<0])
+pData.pheno.meth.camp[pData.pheno.meth.camp$LOG10IGE_iuml_F48<0,]$S_SUBJECTID
+pData.pheno.meth.camp$LOG10IGE_iuml_F48[pData.pheno.meth.camp$LOG10IGE_iuml_F48<0] <- 0
+summary(pData.pheno.meth.camp$LOG10IGE_iuml_F48)
+
+# correction to these values as clarified by Soma
+pData.pheno.meth.camp$PRE2575FVC_f48 <- pData.pheno.meth.camp$PRE2575FVC_f48*100
+pData.pheno.meth.camp$POS2575FVC_f48 <- pData.pheno.meth.camp$POS2575FVC_f48*100
+
+beta.ewas <- norm.betas.rcp.auto.prob[, colnames(norm.betas.rcp.auto.prob) 
+                                      %in% pData.pheno.meth.camp$toe_ids]
+
+ewas_var <- pData.pheno.meth.camp$LOG10IGE_iuml_F48
+
+pData.pheno.meth.camp$sex[pData.pheno.meth.camp$Gender=="F"]<-0;
+pData.pheno.meth.camp$sex[pData.pheno.meth.camp$Gender=="M"]<-1;
+pData.pheno.meth.camp$sex <- as.factor(pData.pheno.meth.camp$sex)
+pData.pheno.meth.camp$Plate <- sapply(as.character(pData.pheno.meth.camp$Sample_Plate), 
+  switch, "B0001"=1, "B0002"=2, "B0003"=3, "B0004"=4, "B0005"=5, "B0006"=6, "B0007"=7, 
+ "B0008"=8, "B0009"=9, "B0010"=10, "B0011"=11, "B0012"=12, "B0013"=13, "B0014"=14,
+ "B0015"=15,"B0016"=16,"B0017"=17,USE.NAMES = F)
+pData.pheno.meth.camp$Plate <- as.factor(pData.pheno.meth.camp$Plate)
+#pData.pheno.meth.camp$Slide <- as.numeric(pData.pheno.meth.camp$Slide)
+pData.pheno.meth.camp$Array <- as.factor(pData.pheno.meth.camp$Array)
+
+covs=pData.pheno.meth.camp[,c("Plate","Array"), drop=FALSE]
+summary(covs)
+
+# this step not needed anymore as betas only contain autosomes for this IgE EWAS
+#autosomal.sites <- meffil.get.autosomal.sites("epic")
+#autosomal.sites <- intersect(autosomal.sites, rownames(beta.ewas))
+#beta.sva <- beta.ewas[autosomal.sites,]
+
+# should not contain NAs but just as a sanity check
+dim(beta.ewas) # 785352    674
+beta.sva <- na.omit(beta.ewas) 
+dim(beta.sva) # 785352    674
+
+# using betas to calculate SVs to keep on same scale
+#M.ewas <- logit2(beta.sva)
+#M.ewas <- as.matrix(beta.sva)
+
+cov.frame <- model.frame(~., data.frame(covs, stringsAsFactors=F), na.action=na.pass)
+
+# null model only with technical batch variables
+mod0 <- model.matrix(~., cov.frame)
+
+pheno.sel=pData.pheno.meth.camp[,c("LOG10IGE_iuml_F48","Plate","Array"), 
+                                drop=FALSE]
+rownames(pheno.sel) <- pData.pheno.meth.camp$toe_ids
+
+# checking all variables are as factor
+which(sapply(pheno.sel, function(x) (is.character(x) | is.factor(x)) & length(unique(x))<2))
+@
+
+\section{SVA estimation}
+
+<<echo = TRUE, message = FALSE, warning=FALSE, results = "markup">>=
+# for reproducibility
+# for reproducibility
+set.seed(123456)
+mod.res <- t(resid(lm(t(beta.sva) ~., data=as.data.frame(pheno.sel))))
+n.sv <- EstDimRMT(mod.res, FALSE)$dim + 1 # 48
+n.sv
+
+# Full model
+mod <- model.matrix( ~ LOG10IGE_iuml_F48 + Plate + Array, data=pheno.sel)
+
+smartsva.ret <- smartsva(beta.sva, mod=mod, mod0=mod0, n.sv=n.sv)                
+smartsva.sv <- as.data.frame(smartsva.ret$sv)
+rownames(smartsva.sv) <- pData.pheno.meth.camp$toe_ids
+
+save(smartsva.ret, smartsva.sv, 
+     file=file.path(results.dir,paste0("CAMP_smartsva_results_IgE_", 
+                                       timeStamp,".RData")))
+
+colnames(smartsva.sv) <- gsub(x = colnames(smartsva.sv), 
+                              pattern = "\\V", replacement = "SV")
+smartsva.sv <- smartsva.sv[,1:10]
+smartsva.sv[1:2,]
+pData.pheno.meth.camp <- merge(pData.pheno.meth.camp, 
+                        smartsva.sv, by.x="toe_ids", by.y="row.names", sort=F)
+
+save(beta.ewas, pData.pheno.meth.camp, 
+     file=file.path(results.dir,paste0("CAMP_betas_pheno_forIgE.EWAS_",
+                                       timeStamp,".RData")))
+beta.sva <- NULL
+@
+
+\section{Correlations PCs and SVs and pc regression plots}
+
+<<echo = TRUE, message = FALSE, warning=FALSE, results = "markup">>=
+cor.test(pData.pheno.meth.camp$PC1, pData.pheno.meth.camp$LOG10IGE_iuml_F48) # not sig
+cor.test(pData.pheno.meth.camp$PC2, pData.pheno.meth.camp$LOG10IGE_iuml_F48) # not sig
+cor.test(pData.pheno.meth.camp$PC3, pData.pheno.meth.camp$LOG10IGE_iuml_F48) # not sig
+
+cor.test(pData.pheno.meth.camp$PC1, as.numeric(pData.pheno.meth.camp$Slide))
+cor.test(pData.pheno.meth.camp$PC2, as.numeric(pData.pheno.meth.camp$Slide))
+
+cor.test(pData.pheno.meth.camp$PC1, as.numeric(pData.pheno.meth.camp$Array))
+cor.test(pData.pheno.meth.camp$PC2, as.numeric(pData.pheno.meth.camp$Array))
+
+cor.test(pData.pheno.meth.camp$PC1, as.numeric(pData.pheno.meth.camp$Plate))
+cor.test(pData.pheno.meth.camp$PC2, as.numeric(pData.pheno.meth.camp$Plate))
+
+# we could go upto 6 or 7 SVs in CAMP
+cor.test(pData.pheno.meth.camp$SV1, pData.pheno.meth.camp$LOG10IGE_iuml_F48) # not sig
+cor.test(pData.pheno.meth.camp$SV2, pData.pheno.meth.camp$LOG10IGE_iuml_F48) # not sig
+cor.test(pData.pheno.meth.camp$SV3, pData.pheno.meth.camp$LOG10IGE_iuml_F48)
+
+cor.test(pData.pheno.meth.camp$SV1, as.numeric(pData.pheno.meth.camp$Plate))
+cor.test(pData.pheno.meth.camp$SV2, as.numeric(pData.pheno.meth.camp$Plate))
+cor.test(pData.pheno.meth.camp$SV3, as.numeric(pData.pheno.meth.camp$Plate))
+
+cor.test(pData.pheno.meth.camp$SV1, as.numeric(pData.pheno.meth.camp$Slide))
+cor.test(pData.pheno.meth.camp$SV2, as.numeric(pData.pheno.meth.camp$Slide))
+cor.test(pData.pheno.meth.camp$SV3, as.numeric(pData.pheno.meth.camp$Slide))
+
+cor.test(pData.pheno.meth.camp$SV1, as.numeric(pData.pheno.meth.camp$Array))
+cor.test(pData.pheno.meth.camp$SV2, as.numeric(pData.pheno.meth.camp$Array))
+cor.test(pData.pheno.meth.camp$SV3, as.numeric(pData.pheno.meth.camp$Array))
+
+cor.data=pData.pheno.meth.camp[,c("LOG10IGE_iuml_F48","Plate", "Slide", 
+    "Array","PC1","PC2","PC3","PC4","PC5","PC6","PC7","PC8","PC9","PC10", "SV1","SV2","SV3",
+    "SV4","SV5","SV6", "SV7", "SV8", "SV9", "SV10"), drop=FALSE]
+cor.data <- as.data.frame(sapply(cor.data, as.numeric))
+M<-cor(cor.data)
+head(round(M,2))
+
+# matrix of the p-value of the correlation
+p.mat <- cor.mtest(cor.data)
+head(p.mat[, 1:5])
+
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+
+corrplot(M, method="color", col=col(200),  
+         type="upper", order="hclust", 
+         addCoef.col = "black", # Add coefficient of correlation
+         tl.col="black", tl.srt=45, #Text label color and rotation
+         # Combine with significance
+         p.mat = p.mat, sig.level = 0.05, insig = "blank", 
+         # hide correlation coefficient on the principal diagonal
+         diag=FALSE 
+         )
+
+pdf(file = file.path(plots.dir, "correlogram_CAMP_pcs_svs_log10Ige.pdf"), 
+    width = 16, height = 15)
+corrplot(M, method="color", col=col(200),  
+         type="upper", order="hclust", 
+         addCoef.col = "black", # Add coefficient of correlation
+         tl.col="black", tl.srt=45, #Text label color and rotation
+         # Combine with significance
+         p.mat = p.mat, sig.level = 0.05, insig = "blank", 
+         # hide correlation coefficient on the principal diagonal
+         diag=FALSE 
+         )
+dev.off()
+
+formula <- c("~LOG10IGE_F48+age_f48+Gender+BMI_F48+HTCM_F48+ETS+TG+
+    growth_pattern+MOMASM+LOG10IGE_iuml_F48+PREFEV_F48+POSFEV_F48+
+PREFVC_F48+POSFVC_F48+PREFF_F48+POSFF_F48+PRE2575FVC_f48+POS2575FVC_f48+
+Bcell+CD4T+CD8T+Mono+Neu+NK+Plate+Slide+Array+PC1+PC2+SV1+SV2")
+
+remove <- c(list(which(is.na(pData.pheno.meth.camp$age_f48) | 
+    is.na(pData.pheno.meth.camp$PREFEV_F48) |  
+    is.na(pData.pheno.meth.camp$POSFEV_F48) |  
+    is.na(pData.pheno.meth.camp$PREFVC_F48) | 
+    is.na(pData.pheno.meth.camp$POSFVC_F48) | 
+    is.na(pData.pheno.meth.camp$PREFF_F48) | 
+    is.na(pData.pheno.meth.camp$POSFF_F48) | 
+    is.na(pData.pheno.meth.camp$PRE2575FVC_f48) | 
+    is.na(pData.pheno.meth.camp$POS2575FVC_f48) | 
+    is.na(pData.pheno.meth.camp$LOG10IGE_iuml_F48) | 
+    is.na(pData.pheno.meth.camp$MOMASM) | is.na(pData.pheno.meth.camp$ETS) | 
+  is.na(pData.pheno.meth.camp$Gender) | is.na(pData.pheno.meth.camp$BMI_F48) | 
+    is.na(pData.pheno.meth.camp$HTCM_F48))))
+length(remove[[1]]) # 34 samples
+pDat.tmp <- pData.pheno.meth.camp[!(rownames(pData.pheno.meth.camp) 
+                                    %in% remove[[1]]),]
+
+ids.keep <- intersect(pDat.tmp$toe_ids, colnames(beta.ewas))
+betas.pcr=beta.ewas[,which(colnames(beta.ewas) %in% ids.keep)]
+dim(beta.ewas) # 785352    674
+dim(betas.pcr) # 785352    640
+
+pheno.sel=pDat.tmp[,c("age_f48", "Gender", "TG", "LOG10IGE_iuml_F48", 
+        "BMI_F48", "HTCM_F48", "MOMASM", "RACE","ETS", "PREFEV_F48", "POSFEV_F48", 
+"PREFVC_F48",  "POSFVC_F48", "PREFF_F48", "POSFF_F48", "PRE2575FVC_f48", 
+"POS2575FVC_f48", "growth_pattern", "Bcell", "CD4T", "CD8T", "Mono", 
+"Neu", "NK", "Plate","Slide","Array","PC1","PC2","SV1","SV2"), drop=FALSE];
+pheno.sel <- data.frame(pheno.sel);
+table(is.na(pheno.sel)) # there shouldn't be any missingness for this plot
+
+# Top  10  principal components can explain  ~37 % of data variation
+pcrplot(betas.pcr, pheno.sel, npc=10)
+
+file.rename(list.files(pattern="pcr_diag*.jpg"), paste0("pcr_diag_IgE_CAMP.jpg"))
+file.copy("pcr_diag_IgE_CAMP.jpg", plots.dir)
+rm(betas.pcr)
+@
+
+\clearpage
+  \begin{figure}[h]
+    \begin{center}
+      \includegraphics[width=0.8\textwidth]{\Sexpr{plots.dir}/pcr_diag_IgE_CAMP}
+    \end{center}
+    \caption{PC regression plot against all phenotypes CAMP}
+  \end{figure}
+  
+\clearpage
+\section{IgE EWAS}
+
+<<echo = TRUE, message = FALSE, warning=FALSE, results = "markup">>=
+
+# we can use beta.ewas
+#ids.keep <- intersect(pData.pheno.meth.camp$toe_ids, colnames(beta.ewas))
+#betas.final=beta.ewas[,which(colnames(beta.ewas) %in% ids.keep)]
+pData.pheno.meth.camp$Plate <- as.factor(pData.pheno.meth.camp$Plate)
+pData.pheno.meth.camp$Slide <- as.factor(pData.pheno.meth.camp$Slide)
+pData.pheno.meth.camp$Array <- as.factor(pData.pheno.meth.camp$Array)
+
+betas.ann850k <- merge(beta.ewas, ann850k, by.x="row.names", by.y="Name", sort=F)
+betas.ann850k[1:2,675:678]
+betas.ann850k$CGsite <- betas.ann850k$Row.names
+rownames(betas.ann850k) <- betas.ann850k$CGsite 
+dim(betas.ann850k)
+betas.ann850k <- betas.ann850k[,676:721]
+betas.ann850k$Gene <- sub(";.*", "", betas.ann850k$UCSC_RefGene_Name)
+
+# CAMP
+# model1: 15,131, 206 overlap with FHS; 198 including CRA
+# model2: 15,339, 204 overlap with FHS
+# model3: 12,093, 204 overlap with FHS
+# model4: 15,391, 207 overlap with FHS; 199 including CRA
+# model5: 14,223, 206 overlap with FHS; 193 including CRA
+# model6: 14,735, 204 overlap with FHS
+# model7: 12,799, 201 overlap with FHS
+# model8: 15,075, 206 overlap with FHS; 194 including CRA
+
+formula <- c("~LOG10IGE_iuml_F48+age_f48+Gender+RACE+ETS+MOMASM+Bcell+CD4T+CD8T+Mono+Neu+NK+PC1+PC2",
+"~LOG10IGE_iuml_F48+age_f48+Gender+RACE+ETS+MOMASM+Bcell+CD4T+CD8T+Mono+Neu+NK+Plate+Array+PC1+PC2",
+"~LOG10IGE_iuml_F48+age_f48+Gender+RACE+ETS+MOMASM+PC1+PC2",
+"~LOG10IGE_iuml_F48+age_f48+Gender+RACE+ETS+MOMASM+Bcell+CD4T+CD8T+Mono+Neu+NK+PC1+PC2+PC3",
+"~LOG10IGE_iuml_F48+age_f48+Gender+RACE+ETS+MOMASM+Bcell+CD4T+CD8T+Mono+Neu+NK+Plate+Array+SV1+SV2",
+"~LOG10IGE_iuml_F48+age_f48+Gender+RACE+ETS+MOMASM+SV1+SV2",
+"~LOG10IGE_iuml_F48+age_f48+Gender+RACE+ETS+MOMASM+Bcell+CD4T+CD8T+Mono+Neu+NK+SV1+SV2+SV3",
+"~LOG10IGE_iuml_F48+age_f48+Gender+RACE+ETS+MOMASM+Bcell+CD4T+CD8T+Mono+Neu+NK+SV1+SV2")
+
+vars.of.interest <- c("LOG10IGE_iuml_F48", "LOG10IGE_iuml_F48", "LOG10IGE_iuml_F48", "LOG10IGE_iuml_F48", "LOG10IGE_iuml_F48", "LOG10IGE_iuml_F48","LOG10IGE_iuml_F48", "LOG10IGE_iuml_F48")
+varNames <- c("LOG10IGE_iuml_F48_ct_2PCs", "LOG10IGE_iuml_F48_ct_plt_arr_2PCs", "LOG10IGE_iuml_F48_noct_2PCs", "LOG10IGE_iuml_F48_ct_3PCs", "LOG10IGE_iuml_F48_ct_plt_arr_2SVs", "LOG10IGE_iuml_F48_noct_2SVs", "LOG10IGE_iuml_F48_ct_3SVs", "LOG10IGE_iuml_F48_ct_2SVs")
+
+remove <- c(list(which(is.na(pData.pheno.meth.camp$age_f48) | 
+                         is.na(pData.pheno.meth.camp$LOG10IGE_iuml_F48) |  
+                         is.na(pData.pheno.meth.camp$MOMASM) | is.na(pData.pheno.meth.camp$ETS) | 
+                         is.na(pData.pheno.meth.camp$Gender))),
+            list(which(is.na(pData.pheno.meth.camp$age_f48) | 
+                         is.na(pData.pheno.meth.camp$LOG10IGE_iuml_F48) |  
+                         is.na(pData.pheno.meth.camp$MOMASM) | is.na(pData.pheno.meth.camp$ETS) | 
+                         is.na(pData.pheno.meth.camp$Gender))),
+            list(which(is.na(pData.pheno.meth.camp$age_f48) | 
+                         is.na(pData.pheno.meth.camp$LOG10IGE_iuml_F48) |  
+                         is.na(pData.pheno.meth.camp$MOMASM) | is.na(pData.pheno.meth.camp$ETS) | 
+                         is.na(pData.pheno.meth.camp$Gender))),
+            list(which(is.na(pData.pheno.meth.camp$age_f48) | 
+                         is.na(pData.pheno.meth.camp$LOG10IGE_iuml_F48) |  
+                         is.na(pData.pheno.meth.camp$MOMASM) | is.na(pData.pheno.meth.camp$ETS) | 
+                         is.na(pData.pheno.meth.camp$Gender))),
+            list(which(is.na(pData.pheno.meth.camp$age_f48) | 
+                         is.na(pData.pheno.meth.camp$LOG10IGE_iuml_F48) |  
+                         is.na(pData.pheno.meth.camp$MOMASM) | is.na(pData.pheno.meth.camp$ETS) | 
+                         is.na(pData.pheno.meth.camp$Gender))),
+            list(which(is.na(pData.pheno.meth.camp$age_f48) | 
+                         is.na(pData.pheno.meth.camp$LOG10IGE_iuml_F48) |  
+                         is.na(pData.pheno.meth.camp$MOMASM) | is.na(pData.pheno.meth.camp$ETS) | 
+                         is.na(pData.pheno.meth.camp$Gender))),
+            list(which(is.na(pData.pheno.meth.camp$age_f48) | 
+                         is.na(pData.pheno.meth.camp$LOG10IGE_iuml_F48) |  
+                         is.na(pData.pheno.meth.camp$MOMASM) | is.na(pData.pheno.meth.camp$ETS) | 
+                         is.na(pData.pheno.meth.camp$Gender))),
+            list(which(is.na(pData.pheno.meth.camp$age_f48) | 
+                         is.na(pData.pheno.meth.camp$LOG10IGE_iuml_F48) |  
+                         is.na(pData.pheno.meth.camp$MOMASM) | is.na(pData.pheno.meth.camp$ETS) | 
+                         is.na(pData.pheno.meth.camp$Gender)))
+)
+
+for (f in 1:length(formula)) {
+  # remove subjects if there is a missing value in a variables of interest  
+  if (length(remove[[f]])!=0) {
+    
+    pDat.tmp <- pData.pheno.meth.camp[-remove[[f]],]
+    betas.tmp <- beta.ewas[,-remove[[f]]]
+    
+  } else {
+    
+    pDat.tmp <- pData.pheno.meth.camp
+    betas.tmp <- beta.ewas
+  }
+  
+  print("pDat.tmp dims:")
+  print(dim(pDat.tmp))
+  print("betas.tmp dims:")
+  print(dim(betas.tmp))
+  
+  design <- model.matrix(as.formula(formula[f]), data=pDat.tmp)
+  print("")
+  print(formula[f])
+  print("")
+  pDat.tmp$Gender <- relevel(pDat.tmp$Gender,ref='F')
+  
+  fit <- limma::lmFit(betas.tmp, design)
+  fit <- limma::eBayes(fit)
+  
+  topHits <- limma::topTable(fit, coef=2, num=Inf, adjust.method="BH", 
+                      genelist = betas.ann850k)
+  print(summary(decideTests(fit)))
+  print("significant probes (bonferroni threshold):")
+  print(table(topHits[,'P.Value']<1.431209e-07))
+  print("significant probes (adj.p-value < 0.05):")
+  print(table(topHits[,'adj.P.Val']<0.05))
+  print("significant probes (adj.p-value <= 0.10):")
+  print(table(topHits[,'adj.P.Val']<=0.10))
+  print("significant probes (adj.p-value <= 0.20):")
+  print(table(topHits[,'adj.P.Val']<=0.20))
+  print("significant probes (p-value < 0.05):")
+  print(table(topHits[,'P.Value']<0.05))
+  
+  tophits.fdr <- topHits[topHits$adj.P.Val<0.05,]
+  
+  write.table(topHits,file=file.path(results.dir, 
+                    paste0("CAMP_DMPs_topHits_all_IgE_",gsub('\\.','',varNames[f]),
+                           "_",timeStamp,".txt")),sep="\t",row.names=F,quote=F)
+  
+  write.table(tophits.fdr,file=file.path(results.dir, 
+                    paste0("CAMP_DMPs_topHits_fdr_IgE_",gsub('\\.','',varNames[f]),
+                           "_",timeStamp,".txt")),sep="\t",row.names=F,quote=F)
+  # volcano plot
+  #volcanoplot(fit, coef=2, cex=1, main="volcano plot \n(blue: adj.P.Val<0.05)", pch=20
+  #            , highlight=sum(limma::topTable(fit, coef=2, adjust.method="BH")$adj.P.Val<0.05)
+  #            , names=rownames(topHits))
+  
+}
+
+# Plotting heavy volcano plots for all models may create issues in loading the pdf, therefore just printing the one for the last model
+volcanoplot(fit, coef=2, cex=1, main="volcano plot \n(blue: adj.P.Val<0.05)", pch=20
+              , highlight=sum(limma::topTable(fit, coef=2, adjust.method="BH")$adj.P.Val<0.05)
+              , names=rownames(topHits))
+
+# defined models in a way that my last model will include cell types + 2SVs
+# could also use: P_lambda(p) from package QCEWAS, gives same output
+P <- topHits$P.Value
+chisq <- qchisq(1-P,1)
+lambda1 = median(chisq)/qchisq(0.5,1)
+lambda1 # 1.125707 for the selected model with ct and 2 SVs
+
+png(file = file.path(plots.dir, "qqplot_log10Ige_CAMP.png"),
+    width = 540, height = 580)
+qq(topHits$P.Value, main="q-q plot camp log10Ige")
+dev.off()
+@
+
+\begin{figure}[h]
+  \begin{center}
+    \includegraphics[width=0.8\textwidth]{\Sexpr{plots.dir}/qqplot_log10Ige_CAMP}
+  \end{center}
+  \caption{Q-Q CAMP}
+\end{figure}
+
+\section{Applying Bacon to tstats}
+
+<<echo = TRUE, message = FALSE, warning=FALSE, results = "markup">>=
+
+bc <- bacon(topHits$t)
+estimates(bc)
+str(bc)
+bias(bc)
+inflation(bc) # using bacon, inflation is 1.017039
+png(file = file.path(plots.dir, "qqplot_DM_CpGs_CAMP_bacon.png"),
+                   width = 1024, height = 540)
+plot(bc, type="qq")
+dev.off()
+
+png(file = file.path(plots.dir, "distribution_zscores_tstats_CAMP.png"),
+    width = 540, height = 540)
+plot(bc, type="hist")
+dev.off()
+
+p <- data.frame(pval(bc))
+topHits.bacon <- cbind(topHits, p)
+P <- topHits.bacon$pval.bc.
+
+# after bacon using usual method, the inflation: 1.08998
+chisq <- qchisq(1-P,1)
+lambda1 = median(chisq)/qchisq(0.5,1)
+lambda1
+
+topHits.bacon$fdr.bc. <- p.adjust(topHits.bacon$pval.bc., method="BH")
+t <- data.frame(tstat(bc))
+topHits.bacon <- cbind(topHits.bacon, t)
+
+write.table(topHits.bacon,file=file.path(results.dir, 
+        paste0("CAMP_DMPs_topHits_all_log10Ige_ct2SVs_bacon_",timeStamp,".txt")),
+        sep="\t",row.names=F,quote=F)
+
+save(bc,file=file.path(results.dir,
+                       paste0("CAMP_bacon_results_IgE_", 
+                                       timeStamp,".RData")))
+
+@
+
+\begin{figure}[h]
+  \begin{minipage}{0.50\textwidth}
+    \includegraphics[width=0.8\textwidth]{\Sexpr{plots.dir}/qqplot_DM_CpGs_CAMP_bacon}
+  \end{minipage}%
+  \begin{minipage}{0.50\textwidth}
+    \includegraphics[width=0.8\textwidth]{\Sexpr{plots.dir}/distribution_zscores_tstats_CAMP}
+  \end{minipage}  
+  \caption{a) Q-Q CAMP bacon b) distribution zscores tstats CAMP}
+\end{figure}
+
+
+\section{Regional analysis}
+
+<<echo = TRUE, message = FALSE, warning=FALSE, results = "markup">>=
+
+formula <- c("~LOG10IGE_iuml_F48+age_f48+Gender+RACE+ETS+MOMASM+
+            Bcell+CD4T+CD8T+Mono+Neu+NK+SV1+SV2")
+
+vars.of.interest <- c("LOG10IGE_iuml_F48")
+varNames <- c("LOG10IGE_iuml_F48")
+
+# 1 missing for log10Ige remove before, others removed 8
+remove <- c(list(which(is.na(pData.pheno.meth.camp$age_f48) | 
+              is.na(pData.pheno.meth.camp$LOG10IGE_iuml_F48) |  
+      is.na(pData.pheno.meth.camp$MOMASM) | is.na(pData.pheno.meth.camp$ETS) | 
+        is.na(pData.pheno.meth.camp$Gender))))
+length(remove[[1]]) # 18 subjects
+
+pDat.reg <- pData.pheno.meth.camp[!(rownames(pData.pheno.meth.camp) 
+                                    %in% remove[[1]]),]
+
+ids.keep <- intersect(pDat.reg$toe_ids, colnames(beta.ewas))
+betas.reg=beta.ewas[,which(colnames(beta.ewas) %in% ids.keep)]
+
+myMs <- logit2(betas.reg)
+myMs <- as.matrix(myMs)
+
+pDat.reg$Gender <- relevel(pDat.reg$Gender,ref='F')
+designCAMP = model.matrix(~LOG10IGE_iuml_F48+age_f48+Gender+RACE+ETS+MOMASM+
+            Bcell+CD4T+CD8T+Mono+Neu+NK+SV1+SV2, 
+            data=pDat.reg)
+myannotationCAMP <- cpg.annotate("array", myMs, what="M", 
+    annotation=c(array = "IlluminaHumanMethylationEPIC", 
+        annotation = "ilmn10b4.hg19"), arraytype = "EPIC",
+        analysis.type="differential", design=designCAMP, 
+        coef="LOG10IGE_iuml_F48", fdr = 0.05)
+
+# Your contrast returned 18251 individually significant probes. 
+# We recommend the default setting of pcutoff in dmrcate().
+
+dmrcoutputCAMP <- dmrcate(myannotationCAMP, lambda=1000, C=2, pcutoff = "fdr")
+results.rangesCAMP <- extractRanges(dmrcoutputCAMP, genome = "hg19")
+DMRsCAMP <- data.frame(results.rangesCAMP)
+DMRsCAMP <- DMRsCAMP[order(DMRsCAMP$Stouffer),]
+dim(DMRsCAMP) # 3,251
+DMRsCAMP.split <- sub(",.*", "", DMRsCAMP$overlapping.genes)
+DMRsCAMP.split.1 <- sub("-.*", "", DMRsCAMP.split)
+DMRsCAMP$Gene1st <- DMRsCAMP.split.1
+
+chr_st <- paste(DMRsCAMP$seqnames, DMRsCAMP$start, sep = "_")
+chr_st_end <- paste(chr_st, DMRsCAMP$end, sep = "_")
+DMRsCAMP$Coordinates <- chr_st_end
+
+DMRsCAMP.sig <- DMRsCAMP[DMRsCAMP$Stouffer<0.05,]
+
+# lowest and highest absolute mean methylation difference: 0.007
+summary(DMRsCAMP.sig$meandiff)
+# Min.   1st Qu.    Median      Mean   3rd Qu.      Max.
+#-0.034407 -0.009555 -0.006183 -0.004803 -0.002677  0.035584
+head(DMRsCAMP.sig, n=10)
+dim(DMRsCAMP.sig) # 2,408
+DMRsCAMP.sig$abs_meandiffCAMP <- abs(DMRsCAMP.sig$meandiff)
+
+save(myannotationCAMP, dmrcoutputCAMP, 
+     file=file.path(results.dir,paste0("CAMP_regional_DMRs_hg19_results_logIgE_", 
+                                       timeStamp,".RData")))
+
+write.table(DMRsCAMP.sig, file.path(results.dir, 
+      paste0("CAMP_DMRs_dmrcate_logIgE_hg19_fdr_", timeStamp, ".txt")),
+            sep="\t", quote=F, row.names=F)
+@
+
+\section{Session information}
+  
+<<session, echo=FALSE, results='asis', warning = FALSE>>=
+print(Sys.Date())
+print(Sys.time())
+toLatex(sessionInfo())
+@
+    
+\end{document}

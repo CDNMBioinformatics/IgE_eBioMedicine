@@ -1,0 +1,575 @@
+\documentclass{article}
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks,
+  citecolor=black,
+  filecolor=black,
+  linkcolor=red,
+  urlcolor=black
+}
+%\SweaveOpts{concordance=TRUE}
+\usepackage{graphicx, color}
+%\usepackage[export]{adjustbox}
+\usepackage{floatrow}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage{booktabs}
+\usepackage{lscape}
+\usepackage{amsmath, amssymb}
+\usepackage[sort&compress]{natbib}
+\usepackage[a4paper,left=2.5cm,top=2.5cm,bottom=2.5cm,right=2.5cm]{geometry}
+\usepackage{fancyhdr}
+\usepackage{forloop}
+\pagestyle{fancyplain}
+
+\setlength{\parindent}{0cm}
+%\renewcommand{\familydefault}{\sfdefault}
+
+%\input{tex/knitr}
+
+\begin{document}
+\title{\textbf{TOPMed CAMP DNA methylation data QC and sample cleaning}}
+
+\author{reprk: PKachroo\\
+  CDNM, BWH}
+\date{\today}
+%\begin{document}
+
+\maketitle
+
+\tableofcontents
+\clearpage
+
+\section{Setup}
+
+<<setup, echo = TRUE, message = FALSE, results = "markup">>=
+
+# restart R session
+#.rs.restartR()
+rm(list=ls())
+
+options(mc.cores=5)
+system("hostname")
+print(Sys.Date())
+print(Sys.time())
+
+# To generate document: 
+# Change working directory to code directory
+# Run this code on toques using:
+# module load R/4.0.3
+#R -e 'library(knitr);knit("TOPMed_CAMP_DNAm_processing.Rnw")'
+# pdflatex TOPMed_CAMP_DNAm_processing.tex
+
+# merging with WGS, uses hg38?
+## load libraries
+libs <- c("IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
+          "IlluminaHumanMethylationEPICmanifest", "minfi")
+
+for (l in libs) {
+  if (require(l, character.only = T)) {
+    print(paste0(l, " loaded successfully"))
+  } else {
+    install.packages(l)
+    require(l, character.only = T)
+    print(paste0(l, " installed and loaded successfully"))
+  }
+}
+
+sig_digits <- 2
+sum_sd <- function(data, varname) {
+  eval(parse(text = str_c("data[, round(summary(", varname, "), digits=2)] %>% print()")))
+  eval(parse(text = str_c("print(str_c('SD: ', data[, sd(", varname, ", na.rm = T) %>% 
+                                round(sig_digits)]))")))
+}
+@
+
+  \subsection{Packages, Data locations and loading}
+  
+<<echo = TRUE, warning=FALSE, message = FALSE, results = "markup">>=
+
+qc.dir = "/proj/regeps/regep00/studies/CAMP"
+camp.dir = file.path(qc.dir,"data/epigenetic/methylation/TopMed/data/freezes/20200117")
+RGSet.camp = readRDS(file=file.path(camp.dir, "LEVEL2/RGSet")) # 1616 samples
+dim(RGSet.camp) # 1008711
+RGSet.camp
+manifest = getManifest(RGSet.camp)
+manifest
+data(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+data("Manifest")
+table(Manifest$Type)
+
+length(grep("^cg.", rownames(Manifest), value=TRUE)) # 862927 CG probes
+length(grep("^ch.", rownames(Manifest), value=TRUE)) # 2932 CH probes
+length(grep("^rs.", rownames(Manifest), value=TRUE)) # 0
+
+# Downloaded Illumina manifest file
+festV1 <- read.csv("/proj/rerefs/reref00/Illumina/MethylationEPIC-v1-0-B4/lib/MethylationEPIC_v-1-0_B4.csv",
+                   skip=7,as.is=TRUE, sep=",", stringsAsFactors=FALSE)
+
+# loading rest of the libraries
+libs <- c("limma", "wateRmelon", "minfi", "gplots", "ggplot2", "knitr", "R.utils", "impute", 
+          "stats", "tidyverse", "data.table", "here", "e1071", "GGally", "ggrepel", "ENmix", 
+          "meffil", "data.table", "robustbase", "stringi", "geneplotter", "RColorBrewer", 
+          "colorRamps", "lumi", "ggrepel")
+
+for (l in libs) {
+  if (require(l, character.only = T)) {
+    print(paste0(l, " loaded successfully"))
+  } else {
+    install.packages(l)
+    require(l, character.only = T)
+    print(paste0(l, " installed and loaded successfully"))
+  }
+}
+
+plots.dir = file.path(qc.dir,"analyses/reprk/methylation/plots")
+results.dir = file.path(plots.dir,"../results")
+meff.dir = file.path(qc.dir,"analyses/reprk/meffil_850K")
+
+# modified RCP code
+source("/udd/reprk/projects/TOPMed/scripts/RCP_mod.R")
+
+pca.betas <- function (beta, npc = 50) 
+{
+    if (!is.matrix(beta)) {
+        stop("beta is not a data matirx")
+    }
+    cat("Analysis is running, please wait...!", "\n")
+    npc <- min(ncol(beta), npc)
+    svd <- prcomp(t(beta), center = TRUE, scale = TRUE, retx = TRUE)
+    eigenvalue <- svd[["sdev"]]^2
+    prop <- (sum(eigenvalue[1:npc])/sum(eigenvalue)) * 100
+    cat("Top ", npc, " principal components can explain ", prop, 
+        "% of data \n    variation", "\n")
+    save(svd, eigenvalue, prop, file=file.path(results.dir,"pca_betas_auto.RData"))
+}
+
+setwd("/udd/reprk/projects/TOPMed/scripts")
+camp.pheno <- read.csv(file=file.path(qc.dir, "data/phenotype/camp_pheno_0421.csv"),
+                       as.is=TRUE, sep=",", stringsAsFactors=FALSE)
+
+samplesheet.camp <- read.csv(file=file.path(camp.dir, "LEVEL1/SampleSheet.csv"), 
+                             as.is=TRUE, sep = ",", fill=T, stringsAsFactors=FALSE)
+
+sex.mismatch <- read.table(file=file.path(camp.dir, "LEVEL2/sex_mismatch.txt"), 
+                           sep="\t", header=F,stringsAsFactors=FALSE)
+
+# camp chanmine issues
+#https://chanmine.bwh.harvard.edu/issues/21110
+
+# fam file format
+#A text file with no header line, and one line per sample with the following six fields:
+
+#    Family ID ('FID')
+#    Within-family ID ('IID'; cannot be '0')
+#    Within-family ID of father ('0' if father isn't in dataset)
+#    Within-family ID of mother ('0' if mother isn't in dataset)
+#    Sex code ('1' = male, '2' = female, '0' = unknown)
+#    Phenotype value ('1' = control, '2' = case, '-9'/'0'/non-numeric = missing data if case/control)
+
+camp.fam <- str_c(qc.dir, "/metadata/CAMP.fam")
+camp.fam <- fread(camp.fam)
+colnames(camp.fam) <- c("FID","IID","FatherID","MotherID","Sex","Phenotype")
+camp.fam$sex[camp.fam$Sex==1]<-"M"; camp.fam$sex[camp.fam$Sex==2]<-"F"
+dim(camp.fam) # 3062, 1416 F, 1619 M and 27 NAs
+
+# Save result files with timeStamp
+timeStamp <- as.character(round(unclass(Sys.time())))
+print(timeStamp)
+
+# Resource: https://github.com/markgene/maxprobes
+cross_probes_file = paste(camp.dir, "/LEVEL2/cross_reactive_probes.txt",
+                          sep = "")
+if (!file.size(cross_probes_file) == 0){
+  cross_probes = read.table(cross_probes_file, sep = "\t",
+                            header = F, quote = "\"", fill = T)
+  colnames(cross_probes) = c("sample")
+  n_cross_probes = nrow(cross_probes)
+  n_cross_probes
+} else {
+  n_cross_probes = 0
+}
+
+n_cross_probes # 44,570
+
+# load pcs based on autosomes from meffil qc pipeline
+load(file=file.path(meff.dir, "qc/pcs5.norm.beta850K.hg19.CAMP_1618342534.Robj"))
+fail.samps <- read.table(file=file.path(meff.dir, 
+                "qc/camp_failed_samples_metrics_hg19_1618342534.txt"), 
+                sep="\t", header=T,stringsAsFactors=FALSE)
+@
+
+\section{Data preprocessing and filtering}
+  \subsection{Failed Samples filtering and sex mismatches}
+
+<<echo = TRUE, message = FALSE, warning=FALSE, results = "markup">>=
+
+################################
+# camp final analysis from RGSet
+################################
+
+sex.mismatch <- sex.mismatch$V1; length(sex.mismatch)
+sex.mismatch # 29
+
+# removed sex mismatches
+RGSet.camp=RGSet.camp[,!colnames(RGSet.camp) %in% sex.mismatch]
+
+#first six samples are sex mismatches so removed
+# samples with mixed genotype distributions on the measured SNP probes (59 SNP probes), indicating possible sample contamination (n=3)
+
+# genotype concordance sample issues
+rem <- c("TOE413480-BIS-v01_R08C01",
+         "TOE926173-BIS-v01_R02C01",
+         "TOE912812-BIS-v01_R01C01",
+         "TOE481991-BIS-v01_R05C01",
+         "TOE512382-BIS-v01_R05C01",
+         "TOE828804-BIS-v01_R05C01",
+         "TOE207810-BIS-v01_R08C01",
+         "TOE780216-BIS-v01_R07C01",
+         "TOE934432-BIS-v01_R01C01",
+         "TOE774703-BIS-v01_R06C01",
+         "TOE489508-BIS-v01_R05C01",
+         "TOE888835-BIS-v01_R03C01",
+         "TOE125555-BIS-v01_R04C01",
+         "TOE490542-BIS-v01_R01C01",
+         "TOE854851-BIS-v01_R03C01",
+         "TOE982044-BIS-v01_R01C01",
+         "TOE803419-BIS-v01_R05C01",
+         "TOE394568-BIS-v01_R03C01")
+
+RGSet.camp=RGSet.camp[,!colnames(RGSet.camp) %in% rem]
+intersect(sex.mismatch, rem)
+
+################################################
+# Remove failed samples identified using meffil
+################################################
+
+# loaded this file in file loading section
+# selected samples to exclude based on QC report
+index <- fail.samps$issue %in% c("Control probe (dye.bias)", 
+                                 "Methylated vs Unmethylated",
+                                 "Control probe (bisulfite1)",
+                                 "Control probe (bisulfite2)",
+                                 "Control probe (hybe.21771417)",
+                                 "Control probe (hybe.28684356)",
+                                 "Control probe (hybe.39782321)")
+
+outlier <- fail.samps[index,]
+dim(outlier) # 71
+failed.ids <- unique(outlier$sample.name) # 41
+length(failed.ids); failed.ids # finally samples that will be removed
+
+# checking overlap of sex mismatches + genotype issues with failed meffil samples
+intersect(sex.mismatch, failed.ids); intersect(failed.ids, rem)
+
+RGSet.camp=RGSet.camp[,!colnames(RGSet.camp) %in% failed.ids]
+dim(RGSet.camp) # 1531
+
+betas.chk <- getBeta(RGSet.camp)
+pData.camp <- pData(RGSet.camp)
+ann850k <- getAnnotation(RGSet.camp)
+xychr = rownames(betas.chk) %in% ann850k$Name[ann850k$chr %in% c("chrX","chrY")]
+betas.xy = betas.chk[xychr,]
+
+# checking if you see any outliers
+mdsPlot(as.matrix(betas.chk), numPositions=500, main=sprintf("Beta MDS - Sex\n%d most variable positions", 500), sampNames=pData.camp$TOEID, pch=1, legendNCol=2, sampGroups=pData.camp$Gender, legendPos="bottomright", pal=c(brewer.pal(8, "Dark2"), brewer.pal(12, "Paired")))
+
+mdsPlot(as.matrix(betas.xy), numPositions=19627, main=sprintf("Beta MDS - Sex\n%d all sex chr positions", 19627), sampNames=pData.camp$TOEID, pch=1, legendNCol=2, sampGroups=pData.camp$Gender, legendPos="bottomright", pal=c(brewer.pal(8, "Dark2"), brewer.pal(12, "Paired")))
+
+pdf(file = file.path(plots.dir, "MDS_sex_out_500pos_names.pdf"), width = 6, height = 6)
+mdsPlot(as.matrix(betas.chk), numPositions=500, main=sprintf("Beta MDS - Sex\n%d most variable positions", 500), sampNames=pData.camp$TOEID, pch=1, legendNCol=2, sampGroups=pData.camp$Gender, legendPos="bottomright", pal=c(brewer.pal(8, "Dark2"), brewer.pal(12, "Paired")))
+dev.off()
+
+pdf(file = file.path(plots.dir, "MDS_sex_chr_out_19627pos_names.pdf"), width = 6, height = 6)
+mdsPlot(as.matrix(betas.xy), numPositions=19627, main=sprintf("Beta MDS - Sex\n%d all sex chr positions", 19627), sampNames=pData.camp$TOEID, pch=1, legendNCol=2, sampGroups=pData.camp$Gender, legendPos="bottomright", pal=c(brewer.pal(8, "Dark2"), brewer.pal(12, "Paired")))
+dev.off()
+
+# sex outliers identified as above
+sex.out <- c("TOE416709-BIS-v01_R03C01","TOE361401-BIS-v01_R01C01","TOE669284-BIS-v02_R05C01", "TOE354579-BIS-v01_R06C01")
+
+RGSet.camp=RGSet.camp[,!colnames(RGSet.camp) %in% sex.out]
+dim(RGSet.camp)
+intersect(rem, sex.out);intersect(failed.ids, sex.out)
+
+# outlier samples as identified in meffil norm report
+pcs <- data.frame(pcs)
+TOE <- data.frame(do.call('rbind', strsplit(as.character(rownames(pcs)),'_',fixed=TRUE)))
+TOE <- data.frame(do.call('rbind', strsplit(as.character(TOE$X1),'-',fixed=TRUE)))
+pcs$TOEID <- TOE$X1
+
+ggplot(pcs, aes(x = PC1, y = PC2)) + 
+    geom_point(alpha = 0.5, size = 2) + 
+    labs(title = "PC2 vs PC1 - minfi QCed CAMP samples") + 
+    geom_label_repel(aes(label = ifelse(PC2 > 50, rownames(pcs), "")),
+                     box.padding   = 0.25, 
+                     point.padding = 0.5,
+                     segment.color = 'grey50') + 
+    theme_minimal() + 
+    theme(plot.title = element_text(size = 10, face = "bold"), 
+          axis.text = element_text(size = 10), 
+          axis.title = element_text(size = 10))
+ggsave(path=plots.dir, "pc1_pc2_samp_outliers_camp.png", width = 8, height = 6)
+
+ggplot(pcs, aes(x = PC2, y = PC3)) + 
+    geom_point(alpha = 0.5, size = 2) + 
+    labs(title = "PC3 vs PC2 - minfi QCed CAMP samples") + 
+    geom_label_repel(aes(label = ifelse(PC2 > 50, rownames(pcs), "")),
+                     box.padding   = 0.25, 
+                     point.padding = 0.5,
+                     segment.color = 'grey50') + 
+    theme_minimal() + 
+    theme(plot.title = element_text(size = 10, face = "bold"), 
+          axis.text = element_text(size = 10), 
+          axis.title = element_text(size = 10))
+
+ggplot(pcs, aes(x = PC2, y = PC3)) + 
+    geom_point(alpha = 0.5, size = 2) + 
+    labs(title = "PC3 vs PC2 - minfi QCed CAMP samples") + 
+    geom_label_repel(aes(label = ifelse(PC2 > 50, TOEID, "")),
+                     box.padding   = 0.25, 
+                     point.padding = 0.5,
+                     segment.color = 'grey50') + 
+    theme_minimal() + 
+    theme(plot.title = element_text(size = 10, face = "bold"), 
+          axis.text = element_text(size = 10), 
+          axis.title = element_text(size = 10))
+ggsave(path=plots.dir, "pc3_pc2_samp_outliers_camp.png", width = 8, height = 6)
+
+# removing those outliers
+samp.out <- c("TOE826476-BIS-v01_R02C01","TOE994378-BIS-v01_R04C01","TOE930667-BIS-v01_R08C01", "TOE206220-BIS-v01_R05C01", "TOE760130-BIS-v01_R04C01","TOE352548-BIS-v01_R05C01","TOE374736-BIS-v01_R03C01","TOE600534-BIS-v01_R04C01")
+
+RGSet.camp=RGSet.camp[,!colnames(RGSet.camp) %in% samp.out]
+dim(RGSet.camp)
+intersect(rem, sex.out);intersect(failed.ids, sex.out)
+
+# probably not needed anymore as these plots are also generated using meffil
+#library(ENmix)
+#jpeg(file = file.path(plots.dir, "ENmixcontrol_plots_CAMP_bisulfite.jpg"),
+#    width = 750, height = 1500)
+#plotCtrl(RGSet.camp)
+#dev.copy(jpeg,'ENmixcontrol_plots_CAMP_bisulfite.jpg')
+#dev.off()
+@
+
+  \subsection{detP calculation}
+
+<<echo = TRUE, message = FALSE, warning=FALSE, results = "markup">>=
+
+##############
+# Detection P
+##############
+
+detP.camp <- detectionP(RGSet.camp, type="m+u")
+print(table(detP.camp>0.05))
+print(table(detP.camp>0.01))
+
+#####################
+# sample-wise thresh.
+#####################
+# colMedians(detP.camp) similar# robustbase r package
+dim(detP.camp[,colMeans(detP.camp)>0.001])
+dim(detP.camp[,colMeans(detP.camp)>0.002])
+dim(detP.camp[,colMeans(detP.camp)>0.003])
+dim(detP.camp[,colMeans(detP.camp)>0.004])
+dim(detP.camp[,colMeans(detP.camp)>0.005])
+dim(detP.camp[,colMeans(detP.camp)>0.01]) 
+# was 35 before, histograms for these samples looked poor, 
+#but some of those were sex mismatches that may have been removed earlier now 
+# from RGSet so the no may be much less now
+dim(detP.camp[,colMeans(detP.camp)>0.05])
+
+################################################
+# Remove failed samples identified using detP
+################################################
+detP.samp.fail <- colnames(detP.camp[,colMeans(detP.camp)>0.01])
+detP.samp.fail
+# some of these may be removed during filtering above, or present in meth-unmeth outliers
+# sex outliers and control probe issues in meffil after filtering qc reports
+
+RGSet.camp=RGSet.camp[,!colnames(RGSet.camp) %in% detP.samp.fail]
+dim(RGSet.camp)
+detP.camp <- detectionP(RGSet.camp, type="m+u")
+
+save(detP.camp, file=file.path(results.dir,paste0("detP.camp_hg19_", 
+                                                  timeStamp,".RData")))
+
+#########################
+# Failed detP probes minfi
+#########################
+# Threshold of detP 0.01 in more than 25% of the samples using minfi stats
+failed.01<-detP.camp > 0.01
+#colMeans(failed.01) # Fraction of failed positions per sample
+sum(colMeans(failed.01)>0.20) # >20% probes failed per sample
+
+sum(rowMeans(failed.01)>0.05)
+sum(rowMeans(failed.01)>0.10)
+sum(rowMeans(failed.01)>0.15)
+sum(rowMeans(failed.01)>0.20) # should be same as length(failedProbes)
+sum(rowMeans(failed.01)>0.25)
+
+# How many positions failed in >20% of samples?
+failedProbes <- rownames(failed.01)[rowMeans(failed.01)>0.20]
+length(failedProbes)
+save(failedProbes, file=file.path(results.dir,paste0("failedProbes_CAMP_hg19_", timeStamp,".RData")))
+
+# plots
+barplot(colMeans(detP.camp), las=2, axisnames = FALSE, main="Mean detection p-values")
+abline(h=0.001,col="red")
+hist(colMeans(detP.camp), las=2, main="Mean detection p-values", breaks=30)
+
+pdf(file = file.path(plots.dir, "colMeans_detP_check_failed_samples_camp.pdf"),
+    width = 10, height = 5)
+barplot(colMeans(detP.camp), las=2, axisnames = FALSE, main="Mean detection p-values")
+abline(h=0.001,col="red")
+dev.off()
+
+pdf(file = file.path(plots.dir, "colMeans_detP_all_samples_hist_camp.pdf"),
+    width = 6, height = 5)
+hist(colMeans(detP.camp), las=2, main="Mean detection p-values", breaks=30)
+dev.off()
+
+# plotting every sample, Not printing this because the loop will run for all and will likely print a huge plot
+pdf(file = file.path(plots.dir, "detP_all_samples_hist_freq_camp.pdf"),
+    width = 160, height = 164)
+par(mfrow=c(40, 38))
+colnames <- dimnames(detP.camp)[[2]]
+for (i in 1:1519) {
+  #print(i)
+  hist(log10(detP.camp[,i]), las=2, breaks=50, main=colnames[i], col="gray", border="white")
+}
+dev.off()
+@
+
+  \subsection{svas and cell type count estimation}
+
+<<echo = TRUE, message = FALSE, warning=FALSE, results = "markup">>=
+
+# generate surrogate variables derived based on intensity data 
+# for non-negative internal control probes
+# this step is pretty quick
+csva<-ctrlsva(RGSet.camp)
+save(csva, file=file.path(results.dir,paste0("camp_svas_rawdata_hg19_", 
+                                             timeStamp, ".RData")))
+
+# cell count estimates
+library("FlowSorted.Blood.EPIC")
+library(ExperimentHub)
+hub <- ExperimentHub()
+#> snapshotDate(): 2020-10-02
+epicref <- query(hub, "FlowSorted.Blood.EPIC")
+epicref; epicref$title
+FlowSorted.Blood.EPIC.ref <- epicref[[1]]
+FlowSorted.Blood.EPIC.ref
+if (memory.limit()>8000){ 
+  countsEPIC<-estimateCellCounts2(RGSet.camp, compositeCellType = "Blood", 
+                                processMethod = "preprocessFunnorm", 
+                                cellTypes = c("CD8T", "CD4T", "NK", "Bcell", 
+                                              "Mono", "Neu"), 
+                                referencePlatform = 
+                                  "IlluminaHumanMethylationEPIC",
+                                referenceset = "FlowSorted.Blood.EPIC.ref",
+                                IDOLOptimizedCpGs =NULL, 
+                                returnAll = TRUE,
+                                meanPlot = TRUE,
+                                verbose = TRUE)
+}
+
+save(countsEPIC, file=file.path(results.dir,paste0("camp_EPIC_estimatecellcounts_hg19_", 
+                                                   timeStamp,".RData")))
+celltype.est.2 <- countsEPIC$counts
+save(celltype.est.2, file=file.path(results.dir, 
+                    paste0("camp_EPIC_estimatecellcounts2_result_hg19_", 
+                           timeStamp, ".RData")))
+
+TOE <- data.frame(do.call('rbind', strsplit(as.character(samplesheet.camp$Basename),'/',fixed=TRUE)))
+samplesheet.camp$TOE_RC <- TOE$X14
+ct.sampsheet <- merge(celltype.est.2, samplesheet.camp, by.x="row.names", by.y="TOE_RC", sort=F)
+#camp.pheno.sel=camp.pheno[,c("camp","S_SUBJECTID"), drop=FALSE]
+#ct.pheno <- merge(ct.sampsheet, camp.pheno.sel, by="S_SUBJECTID", sort=F)
+par(mfrow=c(1,1));sex.pal <- brewer.pal(8,"Set1")
+a = celltype.est.2[ct.sampsheet$Gender == "M",]
+b = celltype.est.2[ct.sampsheet$Gender == "F",]
+boxplot(a, at=0:5*3 + 1, xlim=c(0, 18), ylim=range(a, b), xaxt="n", 
+        col=sex.pal[1], main="", ylab="Cell type proportion")
+boxplot(b, at=0:5*3 + 2, xaxt="n", add=TRUE, col=sex.pal[2])
+axis(1, at=0:5*3 + 1.5, labels=colnames(a), tick=TRUE)
+legend("topleft", legend=c("M","F"), fill=sex.pal)
+
+@
+
+  \subsection{Noob normalization and funnorm}
+
+<<echo = TRUE, message = FALSE, warning=FALSE, results = "markup">>=
+
+# clearing up some objects from memory no longer needed
+rm(countsEPIC)
+rm(celltype.est.2)
+rm(detP.camp)
+rm(csva)
+######################
+# NOOB Normalization
+######################
+
+MSet.noob.camp <- preprocessNoob(RGSet.camp, offset = 15, dyeCorr = TRUE, verbose = TRUE)
+
+###################################################################################
+# This object is sample cleaned but probe filtering has not been performed for this, 
+# check probe filtering steps in betas cleaning code
+# if you use this object for any further downstream analysis
+###################################################################################
+save(MSet.noob.camp, file=file.path(results.dir,paste0("Mset.noob.camp_hg19_", 
+                                                       timeStamp,".RData")))
+MSet.noob.camp <- NULL
+
+################################################################################
+# shows that phenotype file and LIMS/samplesheet genders match for the probands
+################################################################################
+pData.camp <- pData(RGSet.camp)
+pData.pheno <- merge(pData.camp, camp.pheno, by="S_SUBJECTID", sort=F)
+table(pData.pheno$Gender, pData.pheno$SEX)
+
+pData.camp$Sex[pData.camp$Gender=="F"]<-0
+pData.camp$Sex[pData.camp$Gender=="M"]<-1
+sex <- pData.camp$Sex
+
+# Runs for few hours, I wanted the output to be in mset format, otherwise, I can not extract methylated and unmethylated intensities from ratioset
+mset.camp.funnorm <- preprocessFunnorm(RGSet.camp, nPCs=5, sex=sex, ratioConvert = FALSE, 
+                                       bgCorr=TRUE, dyeCorr=TRUE, verbose=TRUE)
+mset.camp.funnorm <- addSex(mset.camp.funnorm)
+
+############################################
+# Dataset after functional normalization
+############################################
+save(mset.camp.funnorm, file=file.path(results.dir,paste0("mset.camp.funnorm_hg19_", 
+                                                          timeStamp,".RData")))
+
+betas <- getBeta(mset.camp.funnorm)
+ann850k <- getAnnotation(mset.camp.funnorm)
+#pData.camp <- pData(mset.camp.funnorm)
+
+# median meth and unmeth intensities plot
+qc <- getQC(mset.camp.funnorm)
+meds <- (qc$mMed + qc$uMed)/2
+mMed <- qc@listData$mMed
+uMed <- qc@listData$uMed
+qc.camp <- data.frame(mMed, uMed, meds)
+rownames(qc.camp) <- qc@rownames
+dim(qc.camp[qc.camp$meds<10.5,])
+plotQC(qc)
+
+# Plots
+pdf(file = file.path(plots.dir, "QC_samples_minfi_detP0.01_20per_samples_camp.pdf"),
+    width = 5, height = 5)
+plotQC(qc)
+dev.off()
+@
+
+\section{Session information}
+  
+<<session, echo=FALSE, results='asis', warning = FALSE>>=
+print(Sys.Date())
+print(Sys.time())
+toLatex(sessionInfo())
+@
+    
+\end{document}
