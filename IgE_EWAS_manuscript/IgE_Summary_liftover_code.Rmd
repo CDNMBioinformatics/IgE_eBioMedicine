@@ -1,0 +1,122 @@
+---
+title: "IgE_Summary_liftover"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+eqtm_adj_193 <- read.csv("kathy-193-eqtm_0719.csv")
+
+eqtm_adj_filter <- eqtm_adj_193 %>%filter(DNAm_Chr == Tx_Chr)
+
+write.csv(eqtm_adj_filter, "eqtm_adj_filter.csv")
+
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("liftOver")
+
+browseVignettes("liftOver")
+
+library(rtracklayer)
+path = system.file(package="liftOver", "extdata", "hg38ToHg19.over.chain")
+ch = import.chain(path)
+ch
+
+library(gwascat)
+cur = makeCurrentGwascat()
+data(cur)
+cur
+
+library(rtracklayer)
+library(AnnotationHub)
+library(GenomicRanges)
+ahub <- AnnotationHub() 
+table(ahub$rdataclass)
+
+ahub.chain <- subset(ahub, rdataclass == "ChainFile" & species == "Homo sapiens")
+query(ahub.chain, c("hg19", "hg38"))
+chain <- ahub.chain[ahub.chain$title == "hg19ToHg38.over.chain.gz"]
+chain <- chain[[1]]
+
+eqtm_adj <- read.csv("eqtm_adj_filter.csv", sep=",", stringsAsFactors = F, as.is=TRUE)
+eqtm_adj$chrom <- paste0('chr',eqtm_adj$DNAm_Chr)
+
+eqtm_adj$DNAm_end_hg19 <- eqtm_adj$DNAm_Pos_hg19+1
+
+eqtm_adj$DNAm_Strand_Plus_minus[eqtm_adj$DNAm_Strand=="F"]<-"+"
+eqtm_adj$DNAm_Strand_Plus_minus[eqtm_adj$DNAm_Strand=="R"]<-"-"
+
+dim(eqtm_adj)
+
+eqtm_adj.gr <- GRanges(seqnames=eqtm_adj[,16],
+                     ranges=IRanges(start=eqtm_adj[,4], end=eqtm_adj[,17]),
+                     strand=Rle(eqtm_adj[,18]), data=eqtm_adj[,2])
+eqtm_adj.gr
+
+eqtm_adj.gr.hg38 <- liftOver(eqtm_adj.gr, chain) 
+eqtm_adj.gr.hg38.df <- data.frame(eqtm_adj.gr.hg38)
+
+head(eqtm_adj)
+
+write.csv(eqtm_adj, "eqtm_adj_0922.csv")
+
+head(eqtm_adj.gr.hg38.df) 
+write.csv(eqtm_adj.gr.hg38.df, "eqtm_adj.gr.hg38.csv")
+
+merged_liftover <- read.csv("merged_liftover.csv")
+
+length(unique(eqtm_adj$CpG))
+dim(eqtm_adj)
+
+dim(eqtm_adj.gr.hg38.df)
+head(eqtm_adj.gr.hg38.df)
+length(unique(eqtm_adj.gr.hg38.df$data))
+
+dim(merged_liftover)
+
+eqtm_adj_noeos <- read.csv("kathy-193-eqtm-noeos.csv")
+eqtm_adj_noeos_filter <- eqtm_adj_noeos %>%filter(DNAm_Chr == Tx_Chr)
+write.csv(eqtm_adj_noeos_filter, "eqtm_adj_noeos_filter.csv")
+
+view(eqtm_adj_noeos_filter)
+
+cpg_25_eqtm_adj_noeos <- read.csv("filter_25_0614.csv")
+view(cpg_25_eqtm_adj_noeos)
+
+cpg_25_eqtm_adj_noeos$SE <- cpg_25_eqtm_adj_noeos$Fx/cpg_25_eqtm_adj_noeos$T
+cpg_25_eqtm_adj_noeos$lower.ci <- cpg_25_eqtm_adj_noeos$Fx - 1.96*cpg_25_eqtm_adj_noeos$SE
+cpg_25_eqtm_adj_noeos$upper.ci <- cpg_25_eqtm_adj_noeos$Fx + 1.96*cpg_25_eqtm_adj_noeos$SE
+
+
+eqtm_adj_noeos_filter <- read.csv("eqtm_adj_noeos_filter.csv", sep=",", stringsAsFactors = F, as.is=TRUE)
+eqtm_adj_noeos_filter$chrom <- paste0('chr',eqtm_adj_noeos_filter$DNAm_Chr)
+
+eqtm_adj_noeos_filter$DNAm_end_hg19 <- eqtm_adj_noeos_filter$DNAm_Pos_hg19+1
+
+eqtm_adj_noeos_filter$DNAm_Strand_Plus_minus[eqtm_adj_noeos_filter$DNAm_Strand=="F"]<-"+"
+eqtm_adj_noeos_filter$DNAm_Strand_Plus_minus[eqtm_adj_noeos_filter$DNAm_Strand=="R"]<-"-"
+
+dim(eqtm_adj_noeos_filter)
+
+eqtm_adj_noeos_filter$abs_log10p <- abs(eqtm_adj_noeos_filter$log10P)
+eqtm_adj_noeos_filter$cpg_absp <- paste(eqtm_adj_noeos_filter$CpG, eqtm_adj_noeos_filter$abs_log10p, sep = "_")
+
+eqtm_adj_noeos_filter.gr <- GRanges(seqnames=eqtm_adj_noeos_filter[,16],
+                     ranges=IRanges(start=eqtm_adj_noeos_filter[,4], end=eqtm_adj_noeos_filter[,17]),
+                     strand=Rle(eqtm_adj_noeos_filter[,18]), data=eqtm_adj_noeos_filter[,20])
+eqtm_adj_noeos_filter.gr 
+
+eqtm_adj_noeos_filter.gr.hg38 <- liftOver(eqtm_adj_noeos_filter.gr, chain) 
+eqtm_adj_noeos_filter.gr.hg38.df <- data.frame(eqtm_adj_noeos_filter.gr.hg38)
+
+head(eqtm_adj_noeos_filter.gr.hg38.df)
+
+eqtm_adj_noeos_filter.df.txdata <- merge(eqtm_adj_noeos_filter.df, eqtm_adj_noeos_filter, by.x="data",by.y="cpg_absp")
+
+head(eqtm_adj_noeos_filter.gr.hg38.df)
+write.csv(eqtm_adj_noeos_filter.gr.hg38.df, "eqtm_adj_noeos_filter.gr.hg38.csv")
+
+```
+

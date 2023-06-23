@@ -1,0 +1,519 @@
+---
+title: "Replication IgE analysis and stats"
+author: "Priyadarshini Kachroo"
+date: "09/02/2021"
+output: 
+  html_document: 
+    code_folding: hide
+    toc: yes
+    toc_float: 
+      collapsed: false
+      smooth_scroll: false
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=TRUE, echo=TRUE}
+
+# restart R session
+#.rs.restartR()
+rm(list=ls())
+
+options(mc.cores=5)
+system("hostname")
+print(Sys.Date())
+print(Sys.time())
+
+## load libraries
+libs <- c("IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
+          "IlluminaHumanMethylationEPICmanifest", "minfi")
+
+for (l in libs) {
+  if (require(l, character.only = T)) {
+    print(paste0(l, " loaded successfully"))
+  } else {
+    install.packages(l)
+    require(l, character.only = T)
+    print(paste0(l, " installed and loaded successfully"))
+  }
+}
+
+# Save result files with timeStamp
+timeStamp <- as.character(round(unclass(Sys.time())))
+print(timeStamp)
+
+sig_digits <- 2
+sum_sd <- function(data, varname) {
+    eval(parse(text = str_c("data[, round(summary(", varname, "), digits=2)] %>% print()")))
+    eval(parse(text = str_c("print(str_c('SD: ', data[, sd(", varname, ", na.rm = T) %>% 
+                                round(sig_digits)]))")))
+}
+
+# loading rest of the libraries
+libs <- c("limma", "wateRmelon", "minfi", "gplots", "ggplot2", "knitr", "R.utils", "impute", 
+          "stats", "tidyverse", "data.table", "here", "e1071", "GGally", "ggrepel", "ENmix",
+          "meffil", "data.table", "robustbase", "stringi", "geneplotter", "RColorBrewer",
+          "colorRamps", "lumi", "ggrepel", "IlluminaHumanMethylationEPICanno.ilm10b4.hg19",
+          "IlluminaHumanMethylationEPICmanifest", "DMRcate", "meffil", "ggpubr","gdata", 
+          "gmodels", "tidyr", "dplyr","gridExtra","isva","sva","base", "readxl", "ggvenn")
+
+for (l in libs) {
+  if (require(l, character.only = T)) {
+    print(paste0(l, " loaded successfully"))
+  } else {
+    install.packages(l)
+    require(l, character.only = T)
+    print(paste0(l, " installed and loaded successfully"))
+  }
+}
+```
+
+# 1. Packages, Data locations and loading
+
+```{r 1.1.load_dat}
+
+camp.dir="/proj/regeps/regep00/studies/CAMP"
+cra.dir="/proj/regeps/regep00/studies/CRA"
+fhs.dir="/udd/reprk/projects/TOPMed/DNAm_data"
+
+results.camp.dir = file.path(camp.dir, "analyses/reprk/methylation/results/IgE_paper")
+plots.camp.dir = file.path(results.camp.dir, "plots")
+
+results.cra.dir = file.path(cra.dir, "analysis/reprk/methylation/results/IgE_paper")
+plots.cra.dir = file.path(results.cra.dir, "plots")
+
+# loads the pheno files to get stats for Table 1 clinical characteristics
+load(file=file.path(results.cra.dir, "CRA_betas_pheno_forIgE.EWAS_1630531041.RData"))
+load(file=file.path(results.camp.dir, "CAMP_betas_pheno_forIgE.EWAS_1630531235.RData"))
+
+camp.fdr <- read.table(file=file.path(results.camp.dir, 
+                    "CAMP_DMPs_topHits_fdr_IgE_with_CIs_LOG10IGE_iuml_F48_ct_2SVs_1686860813.txt"), 
+                    sep="\t", header=T,stringsAsFactors=FALSE, quote="")
+
+cra.fdr <- read.table(file=file.path(results.cra.dir, 
+                    "CRA_DMPs_topHits_fdr_IgE_with_CIs_log10Ige_ct2SVs_1686857830.txt"), 
+                    sep="\t", header=T,stringsAsFactors=FALSE, quote="")
+
+#fhs.fdr <- read.csv(file=file.path(fhs.dir, 
+#                    "IgE_offGen3_sample3471_adjSVp01_cellnoEOS_fdr5.csv"),
+#                    as.is=TRUE, sep = ",", stringsAsFactors=FALSE)
+
+fhs.fdr <- read.csv(file=file.path(fhs.dir, 
+                    "EWAS_adj_confint_0620.csv"),
+                    as.is=TRUE, sep = ",", stringsAsFactors=FALSE)
+fhs.fdr <- fhs.fdr[-1,]
+```
+
+# 2. Replication between CRA, CAMP and FHS
+
+```{r 2.rep}
+
+# Venn diagram
+#if (!require(devtools)) install.packages("devtools")
+#devtools::install_github("yanlinlin82/ggvenn")
+ve <- list(
+    FHS = fhs.fdr$Row.names, 
+    CRA = cra.fdr$CGsite, 
+    CAMP = camp.fdr$CGsite)
+
+pdf(file = file.path(plots.camp.dir, "venn_FHS_CRA_CAMP.pdf"),width = 6, height = 6)
+ggvenn(
+    ve, digits=1,text_size = 4, fill_alpha = 0.4, 
+    fill_color = c("#0073C2FF", "#EFC000FF", "#CD534CFF"),
+    stroke_size = 0.6, set_name_size = 5
+)
+dev.off()
+ggvenn(
+    ve, digits=1,text_size = 4, fill_alpha = 0.4, 
+    fill_color = c("#0073C2FF", "#EFC000FF", "#CD534CFF"),
+    stroke_size = 0.6, set_name_size = 5
+)
+
+dim(cra.fdr[cra.fdr$logFC<0,])
+#[1] 17978    53
+dim(cra.fdr[cra.fdr$logFC>0,])
+#[1] 3823   53
+
+dim(camp.fdr[camp.fdr$logFC<0,])
+#[1] 10958    53
+dim(camp.fdr[camp.fdr$logFC>0,])
+#[1] 3265   53
+
+# Replication/overlap of log10IgE EWAS associations between CRA and CAMP
+cra.fdr.sel=cra.fdr[,c("chr", "pos","CGsite", "Gene", "logFC", "CI.L","CI.R","AveExpr", "t", "P.Value", "adj.P.Val"), drop=FALSE]
+length(unique(cra.fdr$Gene)) # 7,445
+
+colnames(cra.fdr.sel)[5:11] <- c("beta_coeff_cra","95CI_lwr","95CI_upr","AveBeta_cra","t_cra","P.Value_cra","FDR_cra")
+
+length(unique(camp.fdr$Gene)) # 5,322
+
+cra.camp.fdr <- merge(camp.fdr, cra.fdr.sel, by="CGsite", sort=F) # 10,426
+dim(cra.camp.fdr)
+length(unique(cra.camp.fdr$Gene.x))
+#[1] 4195
+
+cra.camp.fdr$Direction_camp_cra[cra.camp.fdr$logFC <0 
+                        & cra.camp.fdr$beta_coeff_cra <0] <- "--"
+cra.camp.fdr$Direction_camp_cra[cra.camp.fdr$logFC >0 
+                        & cra.camp.fdr$beta_coeff_cra >0] <- "++"
+cra.camp.fdr$Direction_camp_cra[cra.camp.fdr$logFC >0 
+                        & cra.camp.fdr$beta_coeff_cra <0] <- "+-"
+cra.camp.fdr$Direction_camp_cra[cra.camp.fdr$logFC <0 
+                        & cra.camp.fdr$beta_coeff_cra >0] <- "-+"
+table(cra.camp.fdr$Direction_camp_cra)
+#  --   ++ 
+#8397 2029 
+
+write.table(cra.camp.fdr, file.path(results.camp.dir, 
+      paste0("CAMP_CRA_DMPs_fdr_logIgE_hg19_overlap_with_CIs_", timeStamp, ".txt")),
+            sep="\t", quote=F, row.names=F)
+
+# replication with FHS
+colnames(fhs.fdr)[1] <- c("CGsite")
+
+cra.camp.fhs.fdr <- merge(fhs.fdr, cra.camp.fdr, by="CGsite", sort=F)
+dim(cra.camp.fhs.fdr) # 193
+cra.camp.fhs.fdr$Direction_camp_cra_fhs[cra.camp.fhs.fdr$Direction_camp_cra=="--" 
+                        & cra.camp.fhs.fdr$IgE.Estimate <0] <- "---"
+cra.camp.fhs.fdr$Direction_camp_cra_fhs[cra.camp.fhs.fdr$Direction_camp_cra=="++" 
+                        & cra.camp.fhs.fdr$IgE.Estimate >0] <- "+++"
+cra.camp.fhs.fdr$Direction_camp_cra_fhs[cra.camp.fhs.fdr$Direction_camp_cra=="++" 
+                        & cra.camp.fhs.fdr$IgE.Estimate <0] <- "++-"
+cra.camp.fhs.fdr$Direction_camp_cra_fhs[cra.camp.fhs.fdr$Direction_camp_cra=="--" 
+                        & cra.camp.fhs.fdr$IgE.Estimate >0] <- "--+"
+table(cra.camp.fhs.fdr$Direction_camp_cra_fhs)
+# ---  +++ 
+#185   8 
+
+write.table(cra.camp.fhs.fdr, file.path(results.camp.dir, 
+      paste0("CAMP_CRA_FHS_DMPs_fdr_logIgE_hg19_overlap_with_CIs_", timeStamp, ".txt")),
+            sep="\t", quote=F, row.names=F)
+
+# overlap with FDR Diff. meth. regions in CRA and CAMP; See EWAS documentation for more details
+camp.reg <- read.table(file=file.path(results.camp.dir, 
+                    "CAMP_DMRs_dmrcate_logIgE_hg19_fdr_1630531235.txt"), 
+                    sep="\t", header=T,stringsAsFactors=FALSE, quote="")
+
+cra.reg <- read.table(file=file.path(results.cra.dir, 
+                    "CRA_DMRs_dmrcate_logIgE_hg19_fdr_1630531041.txt"), 
+                    sep="\t", header=T,stringsAsFactors=FALSE, quote="")
+
+# Overall overlap based on Gene and region
+# Merging by gene won't make sense as lot of genes are repeated
+# based on region annotations
+length(intersect(camp.reg$Gene1st, cra.reg$Gene1st)) # 1,189
+
+# Based on exact coordinates
+length(intersect(camp.reg$Coordinates, cra.reg$Coordinates)) # 1504
+
+# this may not make as much sense when we have a huge exact coordinate overlap
+length(intersect(camp.reg$overlapping.genes, cra.reg$overlapping.genes)) # 1313
+
+# Select required columns
+#cra.reg.sel=cra.reg[,c("Coordinates","width","no.cpgs","min_smoothed_fdr","Stouffer",
+#           "maxdiff", "meandiff", "overlapping.genes", "Gene1st"),
+#           drop=FALSE]
+
+DMRs_cra_camp <- merge(camp.reg, cra.reg, by="Coordinates")
+
+####################################################################
+# Table contains these 1504 regions that overlap by coordinates
+####################################################################
+
+# check average direction in regions
+DMRs_cra_camp$Direction_camp_cra[DMRs_cra_camp$meandiff.x <0 
+                        & DMRs_cra_camp$meandiff.y <0] <- "--"
+DMRs_cra_camp$Direction_camp_cra[DMRs_cra_camp$meandiff.x >0 
+                        & DMRs_cra_camp$meandiff.y >0] <- "++"
+DMRs_cra_camp$Direction_camp_cra[DMRs_cra_camp$meandiff.x >0 
+                        & DMRs_cra_camp$meandiff.y <0] <- "+-"
+DMRs_cra_camp$Direction_camp_cra[DMRs_cra_camp$meandiff.x <0 
+                        & DMRs_cra_camp$meandiff.y >0] <- "-+"
+table(DMRs_cra_camp$Direction_camp_cra)
+#   --   +-   ++ 
+#  1271   4   229 
+
+# timeStamp the results
+write.table(DMRs_cra_camp, file.path(results.camp.dir, 
+      paste0("DMRs_CRA_CAMP_FDR_dmrcate_ige_coordinate_overlap_", 
+             timeStamp, ".txt")), sep="\t", quote=F, row.names=F)
+
+# % for opposite direction, 0.3%
+round(table(DMRs_cra_camp$Direction_camp_cra)[2]/(table(DMRs_cra_camp$Direction_camp_cra)[1]+table(DMRs_cra_camp$Direction_camp_cra)[2]+table(DMRs_cra_camp$Direction_camp_cra)[3])*100, digits=1)
+
+# % for same direction, 99.7%
+round(table(DMRs_cra_camp$Direction_camp_cra)[1]/(table(DMRs_cra_camp$Direction_camp_cra)[1]+table(DMRs_cra_camp$Direction_camp_cra)[2]+table(DMRs_cra_camp$Direction_camp_cra)[3])*100, digits=1)
+
+round(table(DMRs_cra_camp$Direction_camp_cra)[3]/(table(DMRs_cra_camp$Direction_camp_cra)[1]+table(DMRs_cra_camp$Direction_camp_cra)[2]+table(DMRs_cra_camp$Direction_camp_cra)[3])*100, digits=1)
+
+# these coordinates would be same for CRA and CAMP
+overlap.camp.cra.bed <- data.frame(DMRs_cra_camp$seqnames.x, DMRs_cra_camp$start.x, DMRs_cra_camp$end.x, DMRs_cra_camp$Coordinates)
+
+cra.reg.bed <- data.frame(cra.reg$seqnames, cra.reg$start, cra.reg$end, cra.reg$Coordinates)
+camp.reg.bed <- data.frame(camp.reg$seqnames, camp.reg$start, camp.reg$end, camp.reg$Coordinates)
+
+colnames(overlap.camp.cra.bed) <- NULL
+colnames(cra.reg.bed) <- NULL
+colnames(camp.reg.bed) <- NULL
+
+# Used as input files for GREAT epigenetics enrichment server
+# http://great.stanford.edu/public/html/
+write.table(overlap.camp.cra.bed, file.path(results.camp.dir, 
+      paste0("overlapping_coordinates_regions_CAMP_CRA_sig_", 
+             timeStamp, ".bed")), sep="\t", quote=F, row.names=F)
+
+write.table(overlap.camp.cra.bed, file.path(results.camp.dir, "overlapping_coordinates_regions_CAMP_CRA_sig.bed"),quote=FALSE, row.names = F)
+#write.table(camp.reg.bed, file.path(results.dir,
+# "results/overlapping_coordinates_regions_CAMP_sig.bed"),quote=FALSE, row.names = F)
+#write.table(cra.reg.bed, file.path(results.dir,
+#  "results/overlapping_coordinates_regions_CRA_sig.bed"),quote=FALSE, row.names = F)
+
+# bed files by directionality
+DMRs_cra_camp_hypo <- DMRs_cra_camp[DMRs_cra_camp$Direction_camp_cra=="--",]
+dim(DMRs_cra_camp_hypo)
+DMRs_cra_camp_hyper <- DMRs_cra_camp[DMRs_cra_camp$Direction_camp_cra=="++",]
+dim(DMRs_cra_camp_hyper)
+
+overlap.camp.cra.hypo.bed <- data.frame(DMRs_cra_camp_hypo$seqnames.x, DMRs_cra_camp_hypo$start.x, DMRs_cra_camp_hypo$end.x, DMRs_cra_camp_hypo$Coordinates)
+
+overlap.camp.cra.hyper.bed <- data.frame(DMRs_cra_camp_hyper$seqnames.x, DMRs_cra_camp_hyper$start.x, DMRs_cra_camp_hyper$end.x, DMRs_cra_camp_hyper$Coordinates)
+colnames(overlap.camp.cra.hypo.bed) <- NULL
+colnames(overlap.camp.cra.hyper.bed) <- NULL
+
+write.table(overlap.camp.cra.hypo.bed, file.path(results.camp.dir, 
+      paste0("overlapping_coordinates_regions_CAMP_CRA_hypo_sig_", 
+             timeStamp, ".bed")), sep="\t", quote=F, row.names=F)
+
+write.table(overlap.camp.cra.hyper.bed, file.path(results.camp.dir, 
+      paste0("overlapping_coordinates_regions_CAMP_CRA_hyper_sig_", 
+             timeStamp, ".bed")), sep="\t", quote=F, row.names=F)
+
+# sent to FHS
+cra.all <- read.table(file=file.path(results.cra.dir, 
+                                     "CRA_DMPs_topHits_all_IgE_log10Ige_ct2SVs_1630531041.txt"), 
+                      sep="\t", header=T,stringsAsFactors=FALSE, quote="")
+
+camp.all <- read.table(file=file.path(results.camp.dir, 
+                                      "CAMP_DMPs_topHits_all_IgE_LOG10IGE_iuml_F48_ct_2SVs_1630531235.txt"), 
+                       sep="\t", header=T,stringsAsFactors=FALSE, quote="")
+
+cra.all.sel=cra.all[,c("chr", "pos","CGsite", "Gene", "logFC", "AveExpr", "t", "P.Value", "adj.P.Val", "B"), drop=FALSE]
+camp.all.sel=camp.all[,c("chr", "pos","CGsite", "Gene", "logFC", "AveExpr", "t", "P.Value", "adj.P.Val", "B"), drop=FALSE]
+colnames(cra.all.sel)[5:10] <- c("beta_coeff_cra","AveBeta_cra","t_cra","P.Value_cra","FDR_cra", "Bstatistics_cra")
+colnames(camp.all.sel)[5:10] <- c("beta_coeff_camp","AveBeta_camp","t_camp","P.Value_camp","FDR_camp", "Bstatistics_camp")
+
+dim(camp.all.sel)
+#[1] 785352     10
+
+dim(cra.all.sel)
+#[1] 790798     10
+
+# merged by CAMP since Pvalues were stronger there
+cra.camp.all.sel <- merge(camp.all.sel, cra.all.sel, by="CGsite", sort=F)
+dim(cra.camp.all.sel)
+#[1] 785317     19
+camp.cra.all.sel <- merge(camp.all.sel, cra.all.sel, by="CGsite", sort=F)
+dim(camp.cra.all.sel)
+#[1] 790833     19
+
+# There were 785352 CpGs tested in the EWAS model for CAMP and 790798 CpGs for CRA. The overlap of both is 785317 CpGs. Some CpGs were missing from CRA in CAMP and vice versa so I have included results for all CpGs that were tested for both datasets, therefore the resulting file has 790833 CpGs. If there is data missing for any CpG site in CAMP, it means it was possibly removed as failed during QC process so wasn't tested for EWAS and the same for any CpG site where results are missing for CRA
+write.table(camp.cra.all.sel, file.path(results.camp.dir, 
+      paste0("CAMP_CRA_DMPs_all_overlap_", timeStamp, ".txt")),
+            sep="\t", quote=F, row.names=F)
+
+```
+
+# 3. Table 1 clinical characteristics stats for participants
+
+```{r 3.stats}
+
+# For CRA
+setDT(pData.pheno.cra)
+sum_sd(pData.pheno.cra, "age")
+sum_sd(pData.pheno.cra, "age_start_asthma")
+
+sum_sd(pData.pheno.cra, "tot_ige")
+sum_sd(pData.pheno.cra, "log10Ige")
+sum_sd(pData.pheno.cra, "BMI")
+
+# Lung function
+sum_sd(pData.pheno.cra, "pctpred_fev1_pre_BD")
+sum_sd(pData.pheno.cra, "pctpred_fvc_pre_BD")
+sum_sd(pData.pheno.cra, "pctpred_fev1_fvc_pre_BD")
+
+pData.pheno.cra[, .N, .(Gender)][order(Gender)][, pct := (N/sum(N))*100] %>% print()
+pData.pheno.cra[, .N, .(sex)][order(sex)][, pct := (N/sum(N))*100] %>% print()
+
+# the subjects with missing data were removed during EWAS
+pData.pheno.cra[, .N, .(Mothers_Asthma_Hx)][order(Mothers_Asthma_Hx)][, pct := (N/sum(N))*100] %>% print()
+pData.pheno.cra[, .N, .(smoking_early_life)][order(smoking_early_life)][, pct := (N/sum(N))*100] %>% print()
+
+pData.pheno.cra[, .N, .(Inhaled_Steroids)][order(Inhaled_Steroids)][, pct := (N/sum(N))*100] %>% print()
+
+pData.pheno.cra[, .N, .(Hospitalized_Asthma_Last_Yr)][order(Hospitalized_Asthma_Last_Yr)][, pct := (N/sum(N))*100] %>% print()
+
+# For CAMP
+setDT(pData.pheno.meth.camp)
+
+# age at collection F48 - end point
+sum_sd(pData.pheno.meth.camp, "age_f48")
+sum_sd(pData.pheno.meth.camp, "AGEON") # age at onset of asthma symptoms
+sum_sd(pData.pheno.meth.camp, "age_s3") # age at baseline of CAMP trial
+
+sum_sd(pData.pheno.meth.camp, "XTIGE_iuml_F48")
+# was standardized for min to match CRA, as there were 2 subjects with IgE~0, resulting in log value <0
+# see EWAS document for more details
+sum_sd(pData.pheno.meth.camp, "LOG10IGE_iuml_F48")
+
+# did not use S3 for paper, but still printing it out here
+sum_sd(pData.pheno.meth.camp, "XTIGE_iuml_S3")
+sum_sd(pData.pheno.meth.camp, "LOG10IGE_iuml_S3")
+sum_sd(pData.pheno.meth.camp, "BMI_F48")
+sum_sd(pData.pheno.meth.camp, "PREFEV1_F48")
+
+pData.pheno.meth.camp[, .N, .(Gender)][order(Gender)][, pct := (N/sum(N))*100] %>% print()
+
+# the subjects with missing data were removed during EWAS
+pData.pheno.meth.camp[, .N, .(MOMASM)][order(MOMASM)][, pct := (N/sum(N))*100] %>% print()
+pData.pheno.meth.camp[, .N, .(RACE)][order(RACE)][, pct := (N/sum(N))*100] %>% print()
+pData.pheno.meth.camp[, .N, .(ETS)][order(ETS)][, pct := (N/sum(N))*100] %>% print()
+
+# nedocramil + placebo:0 vs. Budesonide:1
+pData.pheno.meth.camp$Steroid_binary=ifelse(pData.pheno.meth.camp$TG==1,1,0)
+pData.pheno.meth.camp[, .N, .(Steroid_binary)][order(Steroid_binary)][, pct := (N/sum(N))*100] %>% print()
+
+pData.pheno.meth.camp[, .N, .(bin_cum_edhos_f48)][order(bin_cum_edhos_f48)][, pct := (N/sum(N))*100] %>% print()
+
+```
+
+# 4. Table S1 clinical characteristics stats for participants stratified by sex
+
+```{r 4.stats}
+
+# For CRA
+
+# females
+fem <- pData.pheno.cra[pData.pheno.cra$Gender=="F",]
+mal <- pData.pheno.cra[pData.pheno.cra$Gender=="M",]
+
+setDT(fem)
+sum_sd(fem, "age")
+sum_sd(fem, "age_start_asthma")
+
+sum_sd(fem, "tot_ige")
+sum_sd(fem, "log10Ige")
+sum_sd(fem, "BMI")
+
+# Lung function
+sum_sd(fem, "pctpred_fev1_pre_BD")
+sum_sd(fem, "pctpred_fvc_pre_BD")
+sum_sd(fem, "pctpred_fev1_fvc_pre_BD")
+
+# the subjects with missing data were removed during EWAS
+fem[, .N, .(Mothers_Asthma_Hx)][order(Mothers_Asthma_Hx)][, pct := (N/sum(N))*100] %>% print()
+fem[, .N, .(smoking_early_life)][order(smoking_early_life)][, pct := (N/sum(N))*100] %>% print()
+
+fem[, .N, .(Inhaled_Steroids)][order(Inhaled_Steroids)][, pct := (N/sum(N))*100] %>% print()
+
+fem[, .N, .(Hospitalized_Asthma_Last_Yr)][order(Hospitalized_Asthma_Last_Yr)][, pct := (N/sum(N))*100] %>% print()
+
+# males
+setDT(mal)
+sum_sd(mal, "age")
+sum_sd(mal, "age_start_asthma")
+
+sum_sd(mal, "tot_ige")
+sum_sd(mal, "log10Ige")
+sum_sd(mal, "BMI")
+
+# Lung function
+sum_sd(mal, "pctpred_fev1_pre_BD")
+sum_sd(mal, "pctpred_fvc_pre_BD")
+sum_sd(mal, "pctpred_fev1_fvc_pre_BD")
+
+# the subjects with missing data were removed during EWAS
+mal[, .N, .(Mothers_Asthma_Hx)][order(Mothers_Asthma_Hx)][, pct := (N/sum(N))*100] %>% print()
+mal[, .N, .(smoking_early_life)][order(smoking_early_life)][, pct := (N/sum(N))*100] %>% print()
+
+mal[, .N, .(Inhaled_Steroids)][order(Inhaled_Steroids)][, pct := (N/sum(N))*100] %>% print()
+
+mal[, .N, .(Hospitalized_Asthma_Last_Yr)][order(Hospitalized_Asthma_Last_Yr)][, pct := (N/sum(N))*100] %>% print()
+
+# For CAMP
+
+# females
+fem <- pData.pheno.meth.camp[pData.pheno.meth.camp$Gender=="F",]
+mal <- pData.pheno.meth.camp[pData.pheno.meth.camp$Gender=="M",]
+
+setDT(fem)
+
+# age at collection F48 - end point
+sum_sd(fem, "age_f48")
+sum_sd(fem, "AGEON") # age at onset of asthma symptoms
+sum_sd(fem, "age_s3") # age at baseline of CAMP trial
+
+sum_sd(fem, "XTIGE_iuml_F48")
+# was standardized for min to match CRA, as there were 2 subjects with IgE~0, resulting in log value <0
+# see EWAS document for more details
+sum_sd(fem, "LOG10IGE_iuml_F48")
+
+# did not use S3 for paper, but still printing it out here
+sum_sd(fem, "XTIGE_iuml_S3")
+sum_sd(fem, "LOG10IGE_iuml_S3")
+sum_sd(fem, "BMI_F48")
+sum_sd(fem, "PREFEV1_F48")
+
+fem[, .N, .(Gender)][order(Gender)][, pct := (N/sum(N))*100] %>% print()
+
+# the subjects with missing data were removed during EWAS
+fem[, .N, .(MOMASM)][order(MOMASM)][, pct := (N/sum(N))*100] %>% print()
+fem[, .N, .(RACE)][order(RACE)][, pct := (N/sum(N))*100] %>% print()
+fem[, .N, .(ETS)][order(ETS)][, pct := (N/sum(N))*100] %>% print()
+
+# nedocramil + placebo:0 vs. Budesonide:1
+fem$Steroid_binary=ifelse(fem$TG==1,1,0)
+fem[, .N, .(Steroid_binary)][order(Steroid_binary)][, pct := (N/sum(N))*100] %>% print()
+
+fem[, .N, .(bin_cum_edhos_f48)][order(bin_cum_edhos_f48)][, pct := (N/sum(N))*100] %>% print()
+
+# males
+setDT(mal)
+
+# age at collection F48 - end point
+sum_sd(mal, "age_f48")
+sum_sd(mal, "AGEON") # age at onset of asthma symptoms
+sum_sd(mal, "age_s3") # age at baseline of CAMP trial
+
+sum_sd(mal, "XTIGE_iuml_F48")
+# was standardized for min to match CRA, as there were 2 subjects with IgE~0, resulting in log value <0
+# see EWAS document for more details
+sum_sd(mal, "LOG10IGE_iuml_F48")
+
+# did not use S3 for paper, but still printing it out here
+sum_sd(mal, "XTIGE_iuml_S3")
+sum_sd(mal, "LOG10IGE_iuml_S3")
+sum_sd(mal, "BMI_F48")
+sum_sd(mal, "PREFEV1_F48")
+
+mal[, .N, .(Gender)][order(Gender)][, pct := (N/sum(N))*100] %>% print()
+
+# the subjects with missing data were removed during EWAS
+mal[, .N, .(MOMASM)][order(MOMASM)][, pct := (N/sum(N))*100] %>% print()
+mal[, .N, .(RACE)][order(RACE)][, pct := (N/sum(N))*100] %>% print()
+mal[, .N, .(ETS)][order(ETS)][, pct := (N/sum(N))*100] %>% print()
+
+# nedocramil + placebo:0 vs. Budesonide:1
+mal$Steroid_binary=ifelse(mal$TG==1,1,0)
+mal[, .N, .(Steroid_binary)][order(Steroid_binary)][, pct := (N/sum(N))*100] %>% print()
+
+mal[, .N, .(bin_cum_edhos_f48)][order(bin_cum_edhos_f48)][, pct := (N/sum(N))*100] %>% print()
+
+```
+
+# 5. Session info
+
+```{r 5.session_info}
+print(Sys.Date())
+print(Sys.time())
+toLatex(sessionInfo())
+```

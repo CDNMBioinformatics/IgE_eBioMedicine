@@ -1,0 +1,231 @@
+---
+title: "IgE_Summary_MR"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+
+GWAS_FHS <- read.table("Pulmonary.Allergy.total_log_ige.01-Mar-2010_15-31.summary.imputed.gz", header = TRUE, sep = ",")
+
+load("IgE_offGen3_sample3471_adjSVp01_adjEOS_fdr5_cismQTL.Rdata")
+ige_mQTL <- ige_eQTL
+
+snp_annot <- read.csv("IMPUTED_SNPINFO.csv", header = TRUE)
+
+GWAS_overlap_mqtl <- read.csv("olapfeb6.csv")
+
+gwas_snp_overlapepd <- GWAS_FHS[which(GWAS_FHS$snp %in% snp_annot$SNP),]
+merge_ige <- merge(gwas_snp_overlapepd, snp_annot, by.x="snp", by.y="SNP")
+
+UKBB_asthma <- read.table("UKBB.asthma.assoc.gz", header = TRUE)
+
+UKBB_allergy <- read.table("UKBB.allergy.assoc.gz", header = TRUE)
+
+load("ige_ewas_sig_merge_fhs_eQTL.Rdata")
+load("CLUMPED_eQTL.Rda")
+
+mQTL_exp <- data.frame(
+  SNP = ige_mQTL$Rs_ID,
+  beta = ige_mQTL$beta,
+  se = ige_mQTL$se,
+  effect_allele = ige_mQTL$SNP_Fx_Allele,
+  other_allele = ige_mQTL$SNP_Non_Fx_Allele,
+  eaf = ige_mQTL$SNP_Fx_Allele_Freq,
+  pval = ige_mQTL$pval,
+  Phenotype = ige_mQTL$Row.names,
+  stringsAsFactors = FALSE
+)
+mQTL_exp_dat <- format_data(mQTL_exp, type = "exposure")
+
+mQTL_clumped <- clump_data(mQTL_exp_dat)
+
+write.csv(mQTL_clumped, "mQTL_clumped.csv")
+
+temporary <- ige_mQTL[ige_mQTL$Rs_ID %in% mQTL_clumped$SNP,]
+IgE_GWAS_RSID_needed <- temporary %>% dplyr::select(Rs_ID, SNP_Chr, SNP_Pos_hg19)
+write.csv(IgE_GWAS_RSID_needed, "IgE_GWAS_Overlap_Needed__ForSJ.csv")
+
+ige_out <- data.frame(
+  SNP = GWAS_overlap_mqtl$Rs_ID,
+  beta = GWAS_overlap_mqtl$beta,
+  se = GWAS_overlap_mqtl$se,
+  pval = GWAS_overlap_mqtl$pval,
+  effect_allele = GWAS_overlap_mqtl$effect,
+  other_allele = GWAS_overlap_mqtl$noneffect,
+  eaf = GWAS_overlap_mqtl$obs_eaf,
+  Phenotype = "IgE Measurements",
+  stringsAsFactors = FALSE
+)
+ige_out_form <- format_data(ige_out, type="outcome")
+
+mQTL_clean <- mQTL_clumped[!(is.na(mQTL_clumped$effect_allele.exposure) | mQTL_clumped$SNP == ""),]
+write.csv(mQTL_clean, "mQTL_clean.csv")
+
+ige_harmo <- harmonise_data(
+  exposure_dat = mQTL_clean,
+  outcome_dat = ige_out_form
+)
+
+result_ige <- mr(ige_harmo, method_list = c("mr_wald_ratio", "mr_ivw"))
+write.csv(result_ige, "IgE_Levels_mQTL_MR_results.csv")
+
+
+eQTL_exp <- data.frame(
+  SNP = fhs_eQTL_ige$Rs_ID,
+  beta = fhs_eQTL_ige$Fx,
+  se = (fhs_eQTL_ige$Fx)/(fhs_eQTL_ige$T),
+  effect_allele = fhs_eQTL_ige$SNP_Fx_Allele,
+  other_allele = fhs_eQTL_ige$SNP_Non_Fx_Allele,
+  eaf = fhs_eQTL_ige$SNP_Fx_Allele_Freq,
+  pval = 10^(fhs_eQTL_ige$log10P),
+  Phenotype = fhs_eQTL_ige$transcript_cluster_id,
+  stringsAsFactors = FALSE
+)
+eQTL_exp_dat <- format_data(eQTL_exp, type="exposure")
+eQTL_exp_dat <- clump_data(eQTL_exp_dat, clump_r2 = 0.001)
+save(eQTL_exp_dat, "CLUMPED_eQTL.Rda")
+
+asthma_out <- data.frame(
+  SNP = UKBB_asthma$SNP,
+  beta = UKBB_asthma$OR,
+  se = UKBB_asthma$SE,
+  pval = UKBB_asthma$P,
+  effect_allele = UKBB_asthma$A1,
+  other_allele = UKBB_asthma$A2,
+  Phenotype = "Asthma",
+  stringsAsFactors = FALSE
+)
+asthma_out_form <- format_data(asthma_out, type="outcome")
+
+asthma_harmo <- harmonise_data(
+  exposure_dat = eQTL_exp_dat,
+  outcome_dat = asthma_out_form
+)
+
+result_asthma <- mr(asthma_harmo, method_list = c("mr_wald_ratio", "mr_ivw"))
+write.csv(result_asthma, "Asthma eQTL MR results")
+
+asthma_harmo <- harmonise_data(
+  exposure_dat = mQTL_clean,
+  outcome_dat = asthma_out_form
+)
+
+result_asthma <- mr(asthma_harmo, method_list = c("mr_wald_ratio", "mr_ivw"))
+write.csv(result_asthma, "Asthma mQTL MR results.csv")
+
+Bonf_EWAS_asthma <- result_asthma %>% filter(pval < 0.000255102)
+write.csv(Bonf_EWAS_asthma, "EWAS_Asthma_MR_final_Bonf.csv")
+
+mqtl_193 <- intersect(CAMP_CRA_FHS_DMP$CGsite, ige_mQTL$Row.names)
+
+mqtl_193_table <- merge(CAMP_CRA_FHS_DMP, ige_mQTL, by.x = c("CGsite"), by.y = c("Row.names"))
+  remove(mqtl_193_table)
+mqtl_193_2 <- merge(ige_mQTL, CAMP_CRA_FHS_DMP, by.x = c("Row.names"), by.y = c("CGsite"))
+mqtl_193 <- mqtl_193_2
+
+write.csv(mqtl_193, "mqtl_193.csv")
+
+mQTL_exp_new <- data.frame(
+  SNP = mqtl_193$Rs_ID,
+  beta = mqtl_193$beta,
+  se = mqtl_193$se,
+  effect_allele = mqtl_193$SNP_Fx_Allele,
+  other_allele = mqtl_193$SNP_Non_Fx_Allele,
+  eaf = mqtl_193$SNP_Fx_Allele_Freq,
+  pval = mqtl_193$pval,
+  Phenotype = mqtl_193$Row.names,
+  stringsAsFactors = FALSE
+)
+
+library(dplyr)
+mqtl_maf0.05 <- filter(mQTL_exp_new, eaf > 0.05)
+mqtl_maf0.8 <- filter (mQTL_exp_new, eaf > 0.8)
+
+mQTL_exp_dat_new <- format_data(mQTL_exp_new, type = "exposure")
+
+mQTL_clumped_new <- clump_data(mQTL_exp_dat_new)
+
+
+mQTL_clumped_0.01 <- clump_data(mQTL_exp_dat_new, clump_r2 = 0.01)
+
+write.csv(mQTL_clumped_0.01, "mQTL_clumped_0.01.csv")
+
+mQTL_clean_193 <- mQTL_clumped_new[!(is.na(mQTL_clumped_new$effect_allele.exposure) | mQTL_clumped_new$SNP == ""),]
+
+write.csv(mQTL_clean_193, "mQTL_clean_193.csv")
+
+asthma_out <- data.frame(
+  SNP = UKBB_asthma$SNP,
+  beta = UKBB_asthma$OR,
+  se = UKBB_asthma$SE,
+  pval = UKBB_asthma$P,
+  effect_allele = UKBB_asthma$A1,
+  other_allele = UKBB_asthma$A2,
+  Phenotype = "Asthma",
+  stringsAsFactors = FALSE
+)
+asthma_out_form <- format_data(asthma_out, type="outcome")
+
+
+asthma_harmo <- harmonise_data(
+  exposure_dat = mQTL_clumped_0.01,   
+  outcome_dat = asthma_out_form
+)
+  
+
+result_asthma_0.01 <- mr(asthma_harmo, method_list = c("mr_ivw"))
+write.csv(result_asthma_0.01, "updated Asthma mQTL MR results 0.01.csv")
+
+write.csv(result_asthma_193, "Asthma mQTL MR results - 193 cpgs.csv")
+
+
+
+mQTL_clumped_new <- read.csv("mQTL_clumped_193.csv")
+
+allergy_out <- data.frame(
+  SNP = UKBB_allergy$SNP,
+  beta = UKBB_allergy$OR,
+  se = UKBB_allergy$SE,
+  pval = UKBB_allergy$P,
+  effect_allele = UKBB_allergy$A1,
+  other_allele = UKBB_allergy$A2,
+  Phenotype = "Allergic Diseases",
+  stringsAsFactors = FALSE
+)
+allergy_out_form <- format_data(allergy_out, type="outcome")
+
+allergy_harmo <- harmonise_data(
+  exposure_dat = mQTL_clumped_new,
+  outcome_dat = allergy_out_form
+)
+
+result_allergy_193 <- mr(allergy_harmo, method_list = c("mr_wald_ratio", "mr_ivw"))
+write.csv(result_allergy_193, "Allergic mQTL MR results - 193 cpgs.csv")
+
+
+ige_out <- data.frame(
+  SNP = merge_ige$snp,
+  beta = merge_ige$beta,
+  se = merge_ige$se,
+  pval = merge_ige$pval,
+  effect_allele = merge_ige$MINOR,
+  other_allele = merge_ige$MAJOR,
+  eaf = merge_ige$OBS_MAF,
+  Phenotype = "IgE Measurements",
+  stringsAsFactors = FALSE
+)
+ige_out_form <- format_data(ige_out, type="outcome")
+
+ige_harmo <- harmonise_data(
+  exposure_dat = eQTL_exp_dat,
+  outcome_dat = ige_out_form
+)
+
+result_ige <- mr(ige_harmo, method_list = c("mr_wald_ratio", "mr_ivw"))
+write.csv(result_ige, "IgE Levels eQTL MR results")
+
+result_ige$fdr <- p.adjust(result_ige$pval, method = "fdr")
+
+```
